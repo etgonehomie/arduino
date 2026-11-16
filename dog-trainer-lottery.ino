@@ -47,6 +47,7 @@ bool waitingForQuietAfterFailure = false;
 bool eatingPeriodPending = false;
 bool eatingPeriodActive = false;
 unsigned long eatingPeriodStartTime = 0;
+bool servoWaitingForNextCycle = false;
 
 // =====================================================
 // LOTTERY CONFIGURATION
@@ -71,6 +72,8 @@ const int SMALL_BONUS_CHANCE = 70;
 const int BIG_BONUS_CHANCE = 90;
 const int JACKPOT_CHANCE = 98;
 
+// Delay between individual dispensing cycles (SECONDS).
+const unsigned long SERVO_CYCLE_DELAY_SEC = 3;
 
 // =====================================================
 // PIN CONFIGURATION
@@ -124,6 +127,9 @@ const unsigned long SOUND_SAMPLE_WINDOW_MS =
 
 const unsigned long SOUND_CHECK_INTERVAL_MS =
   (unsigned long)(SOUND_CHECK_INTERVAL_SEC * 1000.0);
+
+const unsigned long SERVO_CYCLE_DELAY_MS =
+  SERVO_CYCLE_DELAY_SEC * 1000UL;
 
 // =====================================================
 // SERVO CONFIGURATION
@@ -550,7 +556,29 @@ void updateServo() {
 
   unsigned long now = millis();
 
-  // Servo is currently open.
+  // ==========================================
+  // WAITING BETWEEN DISPENSING CYCLES
+  // ==========================================
+
+  if (servoWaitingForNextCycle) {
+
+    if (now - servoStateStart >= SERVO_CYCLE_DELAY_MS) {
+
+      servoWaitingForNextCycle = false;
+
+      pelletServo.write(SERVO_OPEN);
+
+      servoIsOpen = true;
+      servoStateStart = now;
+    }
+
+    return;
+  }
+
+  // ==========================================
+  // SERVO IS CURRENTLY OPEN
+  // ==========================================
+
   if (servoIsOpen) {
 
     if (now - servoStateStart >= SERVO_OPEN_MS) {
@@ -562,7 +590,10 @@ void updateServo() {
     }
   }
 
-  // Servo is currently closed.
+  // ==========================================
+  // SERVO IS CURRENTLY CLOSED
+  // ==========================================
+
   else {
 
     if (now - servoStateStart >= SERVO_CLOSED_MS) {
@@ -575,9 +606,8 @@ void updateServo() {
 
       if (portionsRemaining > 0) {
 
-        pelletServo.write(SERVO_OPEN);
-
-        servoIsOpen = true;
+        // Begin configurable delay before next cycle.
+        servoWaitingForNextCycle = true;
         servoStateStart = now;
       }
 
@@ -885,6 +915,7 @@ void stopSession() {
   waitingForQuietAfterFailure = false;
   eatingPeriodActive = false;
   eatingPeriodPending = false;
+  servoWaitingForNextCycle = false;
 
   // Stop any queued dispensing.
   portionsRemaining = 0;
@@ -893,6 +924,7 @@ void stopSession() {
 
   pelletServo.write(SERVO_CLOSED);
 
+  Serial.println();
   Serial.println();
   Serial.println(F("======= SESSION SUMMARY ======="));
 

@@ -2,6 +2,37 @@
 #include <Servo.h>
 
 // =====================================================
+// CUSTOM STRUCTURES
+// =====================================================
+
+struct RewardStage {
+  unsigned long minIntervalMs;
+  unsigned long maxIntervalMs;
+};
+
+struct SoundReading {
+  int minimum;
+  int maximum;
+  int soundLevel;
+};
+
+// =====================================================
+// MANUAL FUNCTION PROTOTYPES
+// =====================================================
+
+// These prevent the Arduino IDE from generating
+// incorrect prototypes before the structs are declared.
+
+RewardStage getCurrentStage();
+
+SoundReading measureSound();
+
+void printSoundInfo(const SoundReading& sound);
+
+void failCurrentTrial(const SoundReading& sound);
+
+
+// =====================================================
 // USER CONFIGURATION
 // =====================================================
 
@@ -12,6 +43,8 @@ const int TRAINING_STAGE = 1;
 // 0 = run indefinitely.
 const unsigned long SESSION_MINUTES = 5;
 
+bool waitingForQuietAfterFailure = false;
+bool eatingPeriodPending = false;
 bool eatingPeriodActive = false;
 unsigned long eatingPeriodStartTime = 0;
 
@@ -69,9 +102,6 @@ const bool AUTO_START_NEXT_TRIAL = true;
 const float SOUND_SAMPLE_WINDOW_SEC = 0.05;
 const float SOUND_CHECK_INTERVAL_SEC = 0.25;
 
-// Prevent repeated timer resets and log spam
-// while the same vocalization continues.
-const unsigned long SOUND_RESET_COOLDOWN_SEC = 1;
 
 // =====================================================
 // TIME CONVERSIONS
@@ -94,9 +124,6 @@ const unsigned long SOUND_SAMPLE_WINDOW_MS =
 
 const unsigned long SOUND_CHECK_INTERVAL_MS =
   (unsigned long)(SOUND_CHECK_INTERVAL_SEC * 1000.0);
-
-const unsigned long SOUND_RESET_COOLDOWN_MS = 
-  (unsigned long) (SOUND_RESET_COOLDOWN_SEC * 1000.0);
 
 // =====================================================
 // SERVO CONFIGURATION
@@ -136,15 +163,94 @@ unsigned long buttonDownTime = 0;
 
 bool longPressHandled = false;
 
+// =====================================================
+// DEBUG CONFIGURATION
+// =====================================================
+
+// Set false to disable sound monitoring output.
+const bool PRINT_SOUND_READINGS = true;
+
+// How often to print sound readings (SECONDS).
+const float SOUND_DEBUG_INTERVAL_SEC = 0.5;
+
+// Enable/disable countdown displays.
+const bool SHOW_COUNTDOWNS = true;
+
+// =====================================================
+// DEBUG TIME CONVERSIONS
+// =====================================================
+
+const unsigned long SOUND_DEBUG_INTERVAL_MS =
+  (unsigned long)(SOUND_DEBUG_INTERVAL_SEC * 1000.0);
+
+unsigned long lastSoundDebugTime = 0;
+int lastCountdownBucket = -1;
+
+// =====================================================
+// COUNTDOWN DISPLAY
+// =====================================================
+
+void resetCountdownDisplay() {
+  lastCountdownBucket = -1;
+}
+
+void printCountdown(const char* label, unsigned long remainingMs) {
+
+  if (!SHOW_COUNTDOWNS) return;
+
+  // Round up so we don't prematurely show zero.
+  unsigned long remainingSec =
+    (remainingMs + 999UL) / 1000UL;
+
+  int displayBucket;
+
+  // Under 60 seconds: update every second.
+  if (remainingSec < 60) {
+    displayBucket = remainingSec;
+  }
+
+  // 1 minute or more: update every 10 seconds.
+  else {
+    displayBucket = ((remainingSec + 9) / 10) * 10;
+  }
+
+  // Only redraw when the displayed time changes.
+  if (displayBucket == lastCountdownBucket) return;
+
+  lastCountdownBucket = displayBucket;
+
+  Serial.print('\r');
+  Serial.print('[');
+  Serial.print(label);
+  Serial.print(F("] "));
+
+  if (displayBucket < 60) {
+
+    Serial.print(displayBucket);
+    Serial.print(F(" seconds remaining"));
+  }
+
+  else {
+
+    Serial.print(displayBucket / 60);
+    Serial.print(F("m "));
+
+    if (displayBucket % 60 < 10) {
+      Serial.print('0');
+    }
+
+    Serial.print(displayBucket % 60);
+    Serial.print(F("s remaining"));
+  }
+
+  // Clear leftover characters from longer previous messages.
+  Serial.print(F("                    "));
+}
+
 
 // =====================================================
 // TRAINING STAGES
 // =====================================================
-
-struct RewardStage {
-  unsigned long minIntervalMs;
-  unsigned long maxIntervalMs;
-};
 
 // Intervals are quiet durations required for a reward.
 // Vocalizations reset the quiet timer, not the session.
@@ -212,24 +318,10 @@ unsigned long quietStartTime = 0;
 unsigned long quietDurationMs = 0;
 
 unsigned long lastSoundCheck = 0;
-unsigned long lastSoundResetTime = 0;
-
-bool hasSoundReset = false;
 
 int totalTrials = 0;
 int successfulTrials = 0;
 int failedTrials = 0;
-
-
-// =====================================================
-// SOUND READING STRUCTURE
-// =====================================================
-
-struct SoundReading {
-  int minimum;
-  int maximum;
-  int soundLevel;
-};
 
 
 // =====================================================
@@ -406,6 +498,11 @@ void updateServo() {
 
       portionsRemaining--;
 
+      Serial.print('\r');
+      Serial.print(F("[DISPENSING] "));
+      Serial.print(portionsRemaining);
+      Serial.println(F(" cycles remaining"));
+
       if (portionsRemaining > 0) {
 
         pelletServo.write(SERVO_OPEN);
@@ -430,7 +527,7 @@ void updateServo() {
 void startQuietTrial() {
 
   if (!sessionActive) return;
-
+  waitingForQuietAfterFailure = false;
   generateNextQuietDuration();
 
   quietStartTime = millis();
@@ -438,22 +535,25 @@ void startQuietTrial() {
 
   totalTrials++;
 
+  resetCountdownDisplay();
+
+  Serial.println();
   Serial.print(F("[TRIAL "));
   Serial.print(totalTrials);
   Serial.println(F(" STARTED]"));
 }
-
 
 // =====================================================
 // SUCCESSFUL QUIET TRIAL
 // =====================================================
 
 void successfulTrial() {
-
+  
   if (!trialActive) return;
 
   trialActive = false;
   successfulTrials++;
+  eatingPeriodPending = true;
 
   int reward = getLotteryReward();
 
@@ -495,67 +595,85 @@ void successfulTrial() {
 // =====================================================
 // UPDATING EATING PAUSE
 // =====================================================
+
 void updateEatingPeriod() {
 
   if (!sessionActive) return;
 
-  // Wait until all dispensing cycles are complete.
-  if (!eatingPeriodActive && !trialActive && !servoDispensing) {
+  // Start eating period once dispensing is complete.
+  if (eatingPeriodPending &&
+      !eatingPeriodActive &&
+      !servoDispensing) {
 
-    // Only enter eating period after a successful trial.
-    if (successfulTrials > 0 &&
-        totalTrials == successfulTrials) {
+    eatingPeriodPending = false;
+    eatingPeriodActive = true;
 
-      eatingPeriodActive = true;
-      eatingPeriodStartTime = millis();
+    eatingPeriodStartTime = millis();
 
-      Serial.print(F("[EATING] Coco has "));
-      Serial.print(TREAT_EATING_WAIT_SEC);
-      Serial.println(F(" seconds to eat."));
-    }
+    resetCountdownDisplay();
+
+    Serial.println();
+    Serial.println(F("[EATING] Treat dispensed."));
   }
 
-  // Check whether eating period has finished.
+  // Update eating countdown.
   if (eatingPeriodActive) {
 
-    if (millis() - eatingPeriodStartTime >= TREAT_EATING_WAIT_MS) {
+    unsigned long elapsed =
+      millis() - eatingPeriodStartTime;
+
+    if (elapsed >= TREAT_EATING_WAIT_MS) {
 
       eatingPeriodActive = false;
 
-      Serial.println(F("[EATING COMPLETE] Starting next trial."));
+      Serial.println();
+      Serial.println(F("[EATING COMPLETE]"));
 
+      // Begin another quiet trial.
       startQuietTrial();
+    }
+
+    else {
+
+      unsigned long remaining =
+        TREAT_EATING_WAIT_MS - elapsed;
+
+      printCountdown("EATING", remaining);
     }
   }
 }
 
 // =====================================================
-// RESET QUIET TIMER AFTER VOCALIZATION
+// FAIL CURRENT TRIAL
 // =====================================================
 
-void resetQuietTimer(const SoundReading& sound) {
+void failCurrentTrial(const SoundReading& sound) {
+
+  if (!trialActive) return;
 
   unsigned long now = millis();
-
-  // Avoid repeatedly resetting/logging during
-  // one continuous period of noise.
-  if (hasSoundReset &&
-      now - lastSoundResetTime < SOUND_RESET_COOLDOWN_MS) {
-    return;
-  }
 
   unsigned long previousQuietTime =
     now - quietStartTime;
 
-  quietStartTime = now;
+  // End the current trial.
+  trialActive = false;
 
-  lastSoundResetTime = now;
-  hasSoundReset = true;
-
+  // Record the failure.
   failedTrials++;
 
+  // Wait until Coco becomes quiet before starting again.
+  waitingForQuietAfterFailure = true;
+
+  resetCountdownDisplay();
+
   Serial.println();
-  Serial.println(F("[QUIET TIMER RESET]"));
+  Serial.println(F("========== TRIAL FAILED =========="));
+
+  Serial.print(F("Failed trials: "));
+  Serial.println(failedTrials);
+
+  Serial.println(F("Reason: Vocalization detected"));
 
   printSoundInfo(sound);
 
@@ -563,8 +681,9 @@ void resetQuietTimer(const SoundReading& sound) {
   Serial.print(previousQuietTime / 1000.0, 1);
   Serial.println(F(" seconds"));
 
-  Serial.println(F("Session continues."));
-  Serial.println(F("Waiting for quiet again."));
+  Serial.println(F("----------------------------------"));
+  Serial.println(F("[WAITING] Waiting for quiet..."));
+  Serial.println(F("=================================="));
   Serial.println();
 }
 
@@ -575,19 +694,67 @@ void resetQuietTimer(const SoundReading& sound) {
 
 void checkSound() {
 
-  if (!sessionActive || !trialActive) return;
+  if (!sessionActive) return;
 
-  // Ignore sounds while Coco is eating.
-  if (eatingPeriodActive) return;
+  // Do not monitor while Coco is eating or the
+  // dispenser is operating.
+  if (eatingPeriodActive || servoDispensing) return;
+
+  // Only monitor during an active trial or while
+  // waiting for quiet after a failed trial.
+  if (!trialActive && !waitingForQuietAfterFailure) return;
+
   unsigned long now = millis();
+
   if (now - lastSoundCheck < SOUND_CHECK_INTERVAL_MS) {
     return;
   }
 
   lastSoundCheck = now;
+
   SoundReading sound = measureSound();
-  if (sound.soundLevel >= WHIMPER_THRESHOLD) {
-    resetQuietTimer(sound);
+
+  // Optional sound monitoring.
+  if (PRINT_SOUND_READINGS &&
+      now - lastSoundDebugTime >= SOUND_DEBUG_INTERVAL_MS) {
+
+    printSoundInfo(sound);
+
+    lastSoundDebugTime = now;
+  }
+
+  // ==========================================
+  // ACTIVE TRIAL
+  // ==========================================
+
+  if (trialActive) {
+
+    // Any vocalization fails the current trial.
+    if (sound.soundLevel >= WHIMPER_THRESHOLD) {
+
+      failCurrentTrial(sound);
+    }
+  }
+
+  // ==========================================
+  // WAITING FOR QUIET AFTER FAILURE
+  // ==========================================
+
+  else if (waitingForQuietAfterFailure) {
+
+    // Start a new trial once Coco becomes quiet.
+    if (sound.soundLevel < WHIMPER_THRESHOLD) {
+
+      waitingForQuietAfterFailure = false;
+
+      Serial.println();
+      Serial.println(F("[QUIET DETECTED]"));
+
+      Serial.println(F("[NEXT TRIAL] Starting new trial."));
+      Serial.println();
+
+      startQuietTrial();
+    }
   }
 }
 
@@ -607,6 +774,13 @@ void updateQuietTimer() {
 
     successfulTrial();
   }
+  else {
+
+    unsigned long remaining =
+      quietDurationMs - quietElapsed;
+
+    printCountdown("QUIET", remaining);
+  }
 }
 
 
@@ -619,17 +793,20 @@ void startSession() {
   if (sessionActive) return;
 
   sessionActive = true;
-
   sessionStartTime = millis();
-
-  sessionDurationMs =
-    SESSION_MINUTES * 60000UL;
+  waitingForQuietAfterFailure = false;
+  eatingPeriodActive = false;
+  eatingPeriodPending = false;
+  eatingPeriodStartTime = 0;
+  sessionDurationMs = SESSION_DURATION_MS;
 
   totalTrials = 0;
   successfulTrials = 0;
   failedTrials = 0;
 
-  hasSoundReset = false;
+  eatingPeriodActive = false;
+  eatingPeriodStartTime = 0;
+
   lastSoundCheck = 0;
 
   Serial.println();
@@ -668,6 +845,9 @@ void stopSession() {
 
   sessionActive = false;
   trialActive = false;
+  waitingForQuietAfterFailure = false;
+  eatingPeriodActive = false;
+  eatingPeriodPending = false;
 
   // Stop any queued dispensing.
   portionsRemaining = 0;

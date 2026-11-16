@@ -24,13 +24,15 @@ const bool BARKING_RESETS_TIMER = true;
 const bool WHIMPER_RESETS_TIMER = true;
 
 // Reward timing
-const unsigned long REWARD_PAUSE_MS = 5000;
+const unsigned long REWARD_PAUSE_MS = 3000;
 
 // Reward schedule (seconds)
-const int rewardSchedule[] = {
-  3, 4, 5, 6, 7, 8, 9, 10,
-  9, 8, 7, 6, 5, 4, 3
-};
+const int rewardSchedule[] = {60, 61};
+
+// const int rewardSchedule[] = {
+//   3, 4, 5, 6, 7, 8, 9, 10,
+//   9, 8, 7, 6, 5, 4, 3
+// };
 
 const int SCHEDULE_LENGTH =
   sizeof(rewardSchedule) / sizeof(rewardSchedule[0]);
@@ -84,8 +86,8 @@ void setup() {
   pelletServo.attach(SERVO_PIN);
   pelletServo.write(SERVO_CLOSED);
   Serial.println();
-  Serial.println("DOG QUIETNESS TRAINING");
-  Serial.println("SYSTEM OFF");
+  Serial.println("***Dog Crate Training***");
+  Serial.println("System OFF");
   Serial.println("Press button to start.");
 }
 
@@ -183,10 +185,8 @@ void startSystem() {
   inRewardPause = false;
   rewardPauseStart = 0;
   Serial.println();
-  Serial.println("SYSTEM ON");
-  Serial.print("First reward target: ");
-  Serial.print(rewardSchedule[scheduleIndex]);
-  Serial.println(" seconds");
+  Serial.println("System ON");
+  printReward(rewardSchedule[scheduleIndex]);
 }
 
 
@@ -199,7 +199,7 @@ void stopSystem() {
   inRewardPause = false;
   rewardPauseStart = 0;
   Serial.println();
-  Serial.println("SYSTEM OFF");
+  Serial.println("System OFF");
   Serial.println("Reward schedule reset.");
 }
 
@@ -209,11 +209,9 @@ void stopSystem() {
 // ==========================================
 
 void dispenseTreat() {
-
-  Serial.println("MOTOR ACTIVATED");
   pelletServo.write(SERVO_OPEN);
   delay(500);
-    Serial.println("TREAT DISPENSED");
+  Serial.println("Treat dispensed.");
   pelletServo.write(SERVO_CLOSED);
   delay(300);
 }
@@ -261,12 +259,9 @@ void startQuietTimer() {
     quietTimerRunning = true;
     quietStart = millis();
     lastLog = quietStart;
-    Serial.print("QUIET START - Target: ");
-    Serial.print(rewardSchedule[scheduleIndex]);
-    Serial.println(" seconds");
+    Serial.println("Quiet timer started...");
   }
 }
-
 
 void resetQuietTimer() {
 
@@ -281,7 +276,7 @@ void resetQuietTimer() {
   if (scheduleIndex != 0) {
     scheduleIndex = 0;
     Serial.println("***REWARD SCHEDULE RESET***");
-    Serial.println("***NEXT REWARD TARGET: 3 seconds***");
+    printReward(3);
   }
 }
 
@@ -296,8 +291,21 @@ void logQuietProgress(
 
   if (now - lastLog >= LOG_INTERVAL_MS) {
     lastLog += LOG_INTERVAL_MS;
-    Serial.print(quietDuration / 1000);
-    Serial.println(",QUIET");
+    int seconds = quietDuration / 1000;
+    if (seconds < 10) {
+      Serial.print("000");
+    }
+    else if (seconds < 100) {
+      Serial.print("00");
+    }
+    else if (seconds < 1000) {
+      Serial.print("0");
+    }
+    Serial.print(seconds);
+    Serial.print("s, ");
+    if (seconds % 10 == 0) {
+      Serial.println(""); 
+    }
   }
 }
 
@@ -310,9 +318,6 @@ void checkRewardTarget(unsigned long quietDuration) {
   unsigned long targetDuration = (unsigned long)rewardSchedule[scheduleIndex] * 1000UL;
 
   if (quietDuration >= targetDuration) {
-    Serial.print(quietDuration / 1000);
-    Serial.println(",DISPENSE TREAT");
-
     // Uncomment to activate automatic treat dispensing
     dispenseTreat();
 
@@ -323,12 +328,8 @@ void checkRewardTarget(unsigned long quietDuration) {
     quietTimerRunning = false;
     quietStart = 0;
     lastLog = 0;
-    Serial.print("PAUSING FOR ");
-    Serial.print(REWARD_PAUSE_MS / 1000);
-    Serial.println(" SECONDS");
-    Serial.print("***NEXT REWARD TARGET: ***");
-    Serial.print(rewardSchedule[scheduleIndex]);
-    Serial.println(" seconds");
+    printEatingPause(REWARD_PAUSE_MS / 1000);
+    printReward(rewardSchedule[scheduleIndex]);
   }
 }
 
@@ -360,10 +361,21 @@ bool handleRewardPause() {
     quietTimerRunning = false;
     quietStart = 0;
     lastLog = 0;
-    Serial.println("EATING PAUSE COMPLETE");
-    Serial.println("STARTING NEW QUIET TIMER");
+    printEatingPause(REWARD_PAUSE_MS / 1000);
     return false;
   }
 
   return true;
+}
+
+void printReward(int seconds) {
+  Serial.print("***NEXT REWARD TARGET: ");
+  Serial.print(seconds);
+  Serial.println(" seconds***");
+}
+
+void printEatingPause(int seconds) {
+    Serial.print("Pausing for eating completed (");
+    Serial.print(seconds);
+    Serial.println("s)");
 }

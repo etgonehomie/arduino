@@ -2,7 +2,7 @@
 #include <Servo.h>
 
 // =====================================================
-// CUSTOM STRUCTURES
+// CUSTOM DATA STRUCTURES
 // =====================================================
 
 struct RewardStage {
@@ -16,25 +16,15 @@ struct SoundReading {
   int soundLevel;
 };
 
-// =====================================================
-// MANUAL FUNCTION PROTOTYPES
-// =====================================================
-
-// These prevent the Arduino IDE from generating
-// incorrect prototypes before the structs are declared.
-
-RewardStage getCurrentStage();
-
-SoundReading measureSound();
-
-void printSoundInfo(const SoundReading& sound);
-
-void failCurrentTrial(const SoundReading& sound);
-
 
 // =====================================================
 // USER CONFIGURATION
+// Change these settings most often.
 // =====================================================
+
+// -----------------------------------------------------
+// TRAINING SESSION
+// -----------------------------------------------------
 
 // Select training stage (1–14).
 const int TRAINING_STAGE = 1;
@@ -43,15 +33,10 @@ const int TRAINING_STAGE = 1;
 // 0 = run indefinitely.
 const unsigned long SESSION_MINUTES = 5;
 
-bool waitingForQuietAfterFailure = false;
-bool eatingPeriodPending = false;
-bool eatingPeriodActive = false;
-unsigned long eatingPeriodStartTime = 0;
-bool servoWaitingForNextCycle = false;
 
-// =====================================================
-// LOTTERY CONFIGURATION
-// =====================================================
+// -----------------------------------------------------
+// LOTTERY / REWARD CONFIGURATION
+// -----------------------------------------------------
 
 // Lottery begins at this stage.
 // Before this stage, successful trials always get 1 reward.
@@ -63,64 +48,164 @@ const int SMALL_BONUS_REWARD = 2;
 const int BIG_BONUS_REWARD = 3;
 const int JACKPOT_REWARD = 5;
 
-// Probability thresholds out of 100.
-// 0–69: 1 cycle
-// 70–89: 2 cycles
-// 90–97: 3 cycles
-// 98–99: 5 cycles
-const int SMALL_BONUS_CHANCE = 70;
-const int BIG_BONUS_CHANCE = 90;
-const int JACKPOT_CHANCE = 98;
+// Probability of each bonus reward.
+// Remaining probability automatically goes to NORMAL_REWARD.
+
+constexpr float SMALL_BONUS_CHANCE = 0.20;  // 20%
+constexpr float BIG_BONUS_CHANCE   = 0.08;  //  8%
+constexpr float JACKPOT_CHANCE     = 0.02;  //  2%
+
+// Compile-time validation: bonus probabilities cannot exceed 100%.
+static_assert(
+  SMALL_BONUS_CHANCE + BIG_BONUS_CHANCE + JACKPOT_CHANCE <= 1.0f,
+  "ERROR: Combined bonus probabilities exceed 100%!"
+);
+
+// -----------------------------------------------------
+// SOUND CONFIGURATION
+// -----------------------------------------------------
+
+// Peak-to-peak sound thresholds.
+const int BARKING_THRESHOLD = 10;
+const int WHIMPER_THRESHOLD = 5;
+
+// Sound measurement timing (SECONDS).
+const float SOUND_SAMPLE_WINDOW_SEC = 0.05;
+const float SOUND_CHECK_INTERVAL_SEC = 0.25;
+
+
+// -----------------------------------------------------
+// WAITING / EATING TIMING
+// -----------------------------------------------------
+
+// Pause after dispensing has completely finished.
+const unsigned long TREAT_EATING_WAIT_SEC = 5;
+
+
+// -----------------------------------------------------
+// SERVO TIMING
+// -----------------------------------------------------
 
 // Delay between individual dispensing cycles (SECONDS).
 const unsigned long SERVO_CYCLE_DELAY_SEC = 3;
 
-// =====================================================
-// PIN CONFIGURATION
-// =====================================================
+// Physical servo movement timing (MILLISECONDS).
+const unsigned long SERVO_OPEN_MS = 500;
+const unsigned long SERVO_CLOSED_MS = 300;
+
+// Servo positions.
+const int SERVO_CLOSED = 0;
+const int SERVO_OPEN = 90;
+
+
+// -----------------------------------------------------
+// HARDWARE PIN CONFIGURATION
+// -----------------------------------------------------
 
 const int SERVO_PIN = 9;
 const int BUTTON_PIN = 2;
 const int SOUND_PIN = A0;
 
 
+// -----------------------------------------------------
+// BUTTON CONFIGURATION
+// -----------------------------------------------------
+
+// Short press: start session.
+// Long press (1.5 seconds): stop session.
+
+const unsigned long BUTTON_DEBOUNCE_MS = 40;
+const unsigned long BUTTON_LONG_PRESS_MS = 1500;
+
+// -----------------------------------------------------
+// DEBUG CONFIGURATION
+// -----------------------------------------------------
+
+// Enable/disable periodic sound output while waiting
+// for quiet after a failed trial.
+//
+// Failure records still include their sound reading.
+const bool PRINT_SOUND_READINGS = true;
+
+// How often to print sound readings while waiting (SECONDS).
+const float SOUND_DEBUG_INTERVAL_SEC = 0.5;
+
+// Enable/disable countdown displays.
+const bool SHOW_COUNTDOWNS = true;
+
+
 // =====================================================
-// SOUND CONFIGURATION
+// TRAINING STAGE DEFINITIONS
 // =====================================================
 
-// Peak-to-peak sound thresholds.
-const int BARKING_THRESHOLD = 10;
-const int WHIMPER_THRESHOLD = 5;
+// Intervals are quiet durations required for a reward.
+// Time units (internally stored as milliseconds).
+const unsigned long SECOND = 1000UL;
+const unsigned long MINUTE = 60UL * SECOND;
+const unsigned long HOUR   = 60UL * MINUTE;
 
-// Post-reward waiting times (SECONDS)
-const unsigned long TREAT_DISPENSE_WAIT_SEC = 1;
-const unsigned long TREAT_EATING_WAIT_SEC = 5;
-const unsigned long POST_REWARD_SETTLE_SEC = 2;
+const RewardStage stages[] = {
 
-// Automatically start the next trial?
-const bool AUTO_START_NEXT_TRIAL = true;
+  // Stage 1: Foundation [1–5 seconds]
+  {1UL * SECOND, 5UL * SECOND},
 
+  // Stage 2: Early confidence [5–8 seconds]
+  {5UL * SECOND, 8UL * SECOND},
 
-// Sound measurement timing (SECONDS)
-const float SOUND_SAMPLE_WINDOW_SEC = 0.05;
-const float SOUND_CHECK_INTERVAL_SEC = 0.25;
+  // Stage 3: Confidence [8–12 seconds]
+  {8UL * SECOND, 12UL * SECOND},
+
+  // Stage 4: Building [12–20 seconds]
+  {12UL * SECOND, 20UL * SECOND},
+
+  // Stage 5: Intermediate [20–30 seconds]
+  {20UL * SECOND, 30UL * SECOND},
+
+  // Stage 6: Extended [30–60 seconds]
+  {30UL * SECOND, 60UL * SECOND},
+
+  // Stage 7 [1–2 minutes]
+  {1UL * MINUTE, 2UL * MINUTE},
+
+  // Stage 8 [2–4 minutes]
+  {2UL * MINUTE, 4UL * MINUTE},
+
+  // Stage 9: Lottery begins [4–8 minutes]
+  {4UL * MINUTE, 8UL * MINUTE},
+
+  // Stage 10 [8–15 minutes]
+  {8UL * MINUTE, 15UL * MINUTE},
+
+  // Stage 11 [15–30 minutes]
+  {15UL * MINUTE, 30UL * MINUTE},
+
+  // Stage 12 [30–60 minutes]
+  {30UL * MINUTE, 60UL * MINUTE},
+
+  // Stage 13 [1–2 hours]
+  {1UL * HOUR, 2UL * HOUR},
+
+  // Stage 14: Long-term goal [2–4 hours]
+  {2UL * HOUR, 4UL * HOUR}
+};
+
+const int TOTAL_STAGES =
+  sizeof(stages) / sizeof(stages[0]);
 
 
 // =====================================================
 // TIME CONVERSIONS
+// Configuration above uses seconds where practical.
 // =====================================================
 
 const unsigned long SESSION_DURATION_MS =
   SESSION_MINUTES * 60UL * 1000UL;
 
-const unsigned long TREAT_DISPENSE_WAIT_MS =
-  TREAT_DISPENSE_WAIT_SEC * 1000UL;
-
 const unsigned long TREAT_EATING_WAIT_MS =
   TREAT_EATING_WAIT_SEC * 1000UL;
 
-const unsigned long POST_REWARD_SETTLE_MS =
-  POST_REWARD_SETTLE_SEC * 1000UL;
+const unsigned long SERVO_CYCLE_DELAY_MS =
+  SERVO_CYCLE_DELAY_SEC * 1000UL;
 
 const unsigned long SOUND_SAMPLE_WINDOW_MS =
   (unsigned long)(SOUND_SAMPLE_WINDOW_SEC * 1000.0);
@@ -128,38 +213,79 @@ const unsigned long SOUND_SAMPLE_WINDOW_MS =
 const unsigned long SOUND_CHECK_INTERVAL_MS =
   (unsigned long)(SOUND_CHECK_INTERVAL_SEC * 1000.0);
 
-const unsigned long SERVO_CYCLE_DELAY_MS =
-  SERVO_CYCLE_DELAY_SEC * 1000UL;
+const unsigned long SOUND_DEBUG_INTERVAL_MS =
+  (unsigned long)(SOUND_DEBUG_INTERVAL_SEC * 1000.0);
+
 
 // =====================================================
-// SERVO CONFIGURATION
+// FUNCTION PROTOTYPES
 // =====================================================
+
+// Keep these declarations after the custom structures.
+// This avoids Arduino IDE prototype-generation issues.
+
+RewardStage getCurrentStage();
+
+SoundReading measureSound();
+
+void printSoundInfo(const SoundReading& sound);
+
+void failCurrentTrial(const SoundReading& sound);
+
+
+// =====================================================
+// RUNTIME STATE
+// =====================================================
+
+// -----------------------------------------------------
+// Session and trial state
+// -----------------------------------------------------
+
+bool sessionActive = false;
+bool trialActive = false;
+
+unsigned long sessionStartTime = 0;
+
+unsigned long quietStartTime = 0;
+unsigned long quietDurationMs = 0;
+
+unsigned long lastSoundCheck = 0;
+
+int totalTrials = 0;
+int successfulTrials = 0;
+int failedTrials = 0;
+
+
+// -----------------------------------------------------
+// Post-failure and eating state
+// -----------------------------------------------------
+
+bool waitingForQuietAfterFailure = false;
+
+bool eatingPeriodPending = false;
+bool eatingPeriodActive = false;
+
+unsigned long eatingPeriodStartTime = 0;
+
+
+// -----------------------------------------------------
+// Servo state
+// -----------------------------------------------------
 
 Servo pelletServo;
 
-const int SERVO_CLOSED = 0;
-const int SERVO_OPEN = 90;
-
-const unsigned long SERVO_OPEN_MS = 500;
-const unsigned long SERVO_CLOSED_MS = 300;
-
 bool servoDispensing = false;
 bool servoIsOpen = false;
+bool servoWaitingForNextCycle = false;
 
 int portionsRemaining = 0;
 
 unsigned long servoStateStart = 0;
 
 
-// =====================================================
-// BUTTON CONFIGURATION
-// =====================================================
-
-// Short press: start session.
-// Long press (1.5 seconds): stop session.
-
-const unsigned long BUTTON_DEBOUNCE_MS = 40;
-const unsigned long BUTTON_LONG_PRESS_MS = 1500;
+// -----------------------------------------------------
+// Button state
+// -----------------------------------------------------
 
 bool lastButtonReading = HIGH;
 bool stableButtonState = HIGH;
@@ -169,43 +295,28 @@ unsigned long buttonDownTime = 0;
 
 bool longPressHandled = false;
 
-// =====================================================
-// DEBUG CONFIGURATION
-// =====================================================
 
-// Set false to disable sound monitoring output.
-const bool PRINT_SOUND_READINGS = true;
+// -----------------------------------------------------
+// Countdown display state
+// -----------------------------------------------------
 
-// How often to print sound readings (SECONDS).
-const float SOUND_DEBUG_INTERVAL_SEC = 0.5;
+bool countdownStarted = false;
 
-// Enable/disable countdown displays.
-const bool SHOW_COUNTDOWNS = true;
+int lastLoggedSecond = -1;
+int countdownEntriesOnLine = 0;
 
-// =====================================================
-// DEBUG TIME CONVERSIONS
-// =====================================================
+unsigned long nextLongCheckpoint = 1;
 
-const unsigned long SOUND_DEBUG_INTERVAL_MS =
-  (unsigned long)(SOUND_DEBUG_INTERVAL_SEC * 1000.0);
+
+// -----------------------------------------------------
+// Sound debug state
+// -----------------------------------------------------
 
 unsigned long lastStatusPrintTime = 0;
 
-bool countdownStarted = false;
-int lastLoggedSecond = -1;
-int countdownEntriesOnLine = 0;
-unsigned long nextLongCheckpoint = 1;
-
-// Latest sound reading for compact status display.
-int latestSoundLevel = 0;
-int latestSoundMinimum = 0;
-int latestSoundMaximum = 0;
-
-bool haveSoundReading = false;
-
 
 // =====================================================
-// COMPACT STATUS / COUNTDOWN DISPLAY
+// COUNTDOWN DISPLAY
 // =====================================================
 
 void resetCountdownDisplay() {
@@ -265,9 +376,9 @@ void printCountdown(
   bool shouldLog = false;
   unsigned long checkpoint = 0;
 
-  // ==========================================
+  // -----------------------------------------
   // SHORT TIMERS: LOG EVERY REMAINING SECOND
-  // ==========================================
+  // -----------------------------------------
 
   if (shortTimer) {
 
@@ -279,9 +390,9 @@ void printCountdown(
     }
   }
 
-  // ==========================================
+  // -----------------------------------------
   // LONG TIMERS: 1s, 10s, 20s, 30s...
-  // ==========================================
+  // -----------------------------------------
 
   else {
 
@@ -330,93 +441,17 @@ void printCountdown(
 
   lastLoggedSecond = checkpoint;
 }
-// =====================================================
-// TRAINING STAGES
-// =====================================================
-
-// Intervals are quiet durations required for a reward.
-// Vocalizations reset the quiet timer, not the session.
-
-const RewardStage stages[] = {
-
-  // Stage 1: Foundation [1–5 seconds]
-  {1000UL, 5000UL},
-
-  // Stage 2: Early confidence [5–8 seconds]
-  {5000UL, 8000UL},
-
-  // Stage 3: Confidence [8–12 seconds]
-  {8000UL, 12000UL},
-
-  // Stage 4: Building [12–20 seconds]
-  {12000UL, 20000UL},
-
-  // Stage 5: Intermediate [20–30 seconds]
-  {20000UL, 30000UL},
-
-  // Stage 6: Extended [30–60 seconds]
-  {30000UL, 60000UL},
-
-  // Stage 7 [1–2 minutes]
-  {60000UL, 120000UL},
-
-  // Stage 8 [2–4 minutes]
-  {120000UL, 240000UL},
-
-  // Stage 9: Lottery begins [4–8 minutes]
-  {240000UL, 480000UL},
-
-  // Stage 10 [8–15 minutes]
-  {480000UL, 900000UL},
-
-  // Stage 11 [15–30 minutes]
-  {900000UL, 1800000UL},
-
-  // Stage 12 [30–60 minutes]
-  {1800000UL, 3600000UL},
-
-  // Stage 13 [1–2 hours]
-  {3600000UL, 7200000UL},
-
-  // Stage 14: Long-term goal [2–4 hours]
-  {7200000UL, 14400000UL}
-};
-const int TOTAL_STAGES =
-  sizeof(stages) / sizeof(stages[0]);
 
 
 // =====================================================
-// SESSION AND TRIAL VARIABLES
-// =====================================================
-
-bool sessionActive = false;
-bool trialActive = false;
-
-unsigned long sessionStartTime = 0;
-unsigned long sessionDurationMs = 0;
-
-unsigned long quietStartTime = 0;
-unsigned long quietDurationMs = 0;
-
-unsigned long lastSoundCheck = 0;
-
-int totalTrials = 0;
-int successfulTrials = 0;
-int failedTrials = 0;
-
-
-// =====================================================
-// GET CURRENT TRAINING STAGE
+// TRAINING STAGE / QUIET DURATION
 // =====================================================
 
 RewardStage getCurrentStage() {
+
   return stages[TRAINING_STAGE - 1];
 }
 
-
-// =====================================================
-// GENERATE RANDOM QUIET DURATION
-// =====================================================
 
 void generateNextQuietDuration() {
 
@@ -430,7 +465,7 @@ void generateNextQuietDuration() {
 
 
 // =====================================================
-// MEASURE SOUND
+// SOUND DETECTION
 // =====================================================
 
 SoundReading measureSound() {
@@ -462,10 +497,6 @@ SoundReading measureSound() {
 }
 
 
-// =====================================================
-// GET SOUND TYPE
-// =====================================================
-
 const char* getSoundType(int soundLevel) {
 
   if (soundLevel >= BARKING_THRESHOLD) {
@@ -479,10 +510,6 @@ const char* getSoundType(int soundLevel) {
   return "QUIET";
 }
 
-
-// =====================================================
-// PRINT SOUND INFORMATION
-// =====================================================
 
 void printSoundInfo(const SoundReading& sound) {
 
@@ -501,7 +528,7 @@ void printSoundInfo(const SoundReading& sound) {
 
 
 // =====================================================
-// LOTTERY REWARD
+// LOTTERY REWARD SELECTION
 // =====================================================
 
 int getLotteryReward() {
@@ -511,23 +538,25 @@ int getLotteryReward() {
     return NORMAL_REWARD;
   }
 
-  int roll = random(100);
+  // Generate random number between 0.0000 and 0.9999.
+  float roll = random(10000) / 10000.0;
 
-  if (roll < SMALL_BONUS_CHANCE) {
-    return NORMAL_REWARD;
-  }
-
-  if (roll < BIG_BONUS_CHANCE) {
-    return SMALL_BONUS_REWARD;
-  }
-
+  // Check largest reward first.
   if (roll < JACKPOT_CHANCE) {
+    return JACKPOT_REWARD;
+  }
+
+  if (roll < JACKPOT_CHANCE + BIG_BONUS_CHANCE) {
     return BIG_BONUS_REWARD;
   }
 
-  return JACKPOT_REWARD;
-}
+  if (roll < JACKPOT_CHANCE + BIG_BONUS_CHANCE + SMALL_BONUS_CHANCE) {
+    return SMALL_BONUS_REWARD;
+  }
 
+  // Everything remaining receives the normal reward.
+  return NORMAL_REWARD;
+}
 
 // =====================================================
 // SERVO DISPENSER
@@ -556,9 +585,9 @@ void updateServo() {
 
   unsigned long now = millis();
 
-  // ==========================================
+  // -----------------------------------------
   // WAITING BETWEEN DISPENSING CYCLES
-  // ==========================================
+  // -----------------------------------------
 
   if (servoWaitingForNextCycle) {
 
@@ -575,9 +604,9 @@ void updateServo() {
     return;
   }
 
-  // ==========================================
+  // -----------------------------------------
   // SERVO IS CURRENTLY OPEN
-  // ==========================================
+  // -----------------------------------------
 
   if (servoIsOpen) {
 
@@ -590,9 +619,9 @@ void updateServo() {
     }
   }
 
-  // ==========================================
+  // -----------------------------------------
   // SERVO IS CURRENTLY CLOSED
-  // ==========================================
+  // -----------------------------------------
 
   else {
 
@@ -606,7 +635,7 @@ void updateServo() {
 
       if (portionsRemaining > 0) {
 
-        // Begin configurable delay before next cycle.
+        // Wait before starting the next dispensing cycle.
         servoWaitingForNextCycle = true;
         servoStateStart = now;
       }
@@ -621,19 +650,28 @@ void updateServo() {
 
 
 // =====================================================
-// START A NEW QUIET TRIAL
+// TRIAL MANAGEMENT
 // =====================================================
+
+// -----------------------------------------------------
+// Start a new quiet trial
+// -----------------------------------------------------
 
 void startQuietTrial() {
 
   if (!sessionActive) return;
+
   waitingForQuietAfterFailure = false;
+
   generateNextQuietDuration();
+
   quietStartTime = millis();
+
   trialActive = true;
   totalTrials++;
 
   resetCountdownDisplay();
+
   Serial.println();
   Serial.println(F("==========================="));
 
@@ -645,9 +683,10 @@ void startQuietTrial() {
   Serial.println('s');
 }
 
-// =====================================================
-// SUCCESSFUL QUIET TRIAL
-// =====================================================
+
+// -----------------------------------------------------
+// Successful trial
+// -----------------------------------------------------
 
 void successfulTrial() {
 
@@ -657,6 +696,7 @@ void successfulTrial() {
 
   successfulTrials++;
 
+  // Start eating period after dispensing finishes.
   eatingPeriodPending = true;
 
   int reward = getLotteryReward();
@@ -675,9 +715,11 @@ void successfulTrial() {
 
   if (reward == JACKPOT_REWARD &&
       TRAINING_STAGE >= LOTTERY_START_STAGE) {
+
     Serial.println(F("*** JACKPOT! ***"));
   }
   else if (reward > NORMAL_REWARD) {
+
     Serial.println(F("*** BONUS! ***"));
   }
 
@@ -685,8 +727,45 @@ void successfulTrial() {
 }
 
 
+// -----------------------------------------------------
+// Failed trial
+// -----------------------------------------------------
+
+void failCurrentTrial(const SoundReading& sound) {
+
+  if (!trialActive) return;
+
+  unsigned long now = millis();
+
+  unsigned long previousQuietTime =
+    now - quietStartTime;
+
+  trialActive = false;
+
+  failedTrials++;
+
+  waitingForQuietAfterFailure = true;
+
+  resetCountdownDisplay();
+
+  Serial.println();
+  Serial.print(F("[FAIL] #"));
+  Serial.print(totalTrials);
+
+  Serial.print(F(" | quiet="));
+  Serial.print(previousQuietTime / 1000.0, 1);
+  Serial.print('s');
+
+  printSoundInfo(sound);
+
+  Serial.println();
+
+  Serial.println(F("[WAIT] Waiting for quiet"));
+}
+
+
 // =====================================================
-// UPDATING EATING PAUSE
+// EATING PERIOD
 // =====================================================
 
 void updateEatingPeriod() {
@@ -714,7 +793,9 @@ void updateEatingPeriod() {
     if (elapsed >= TREAT_EATING_WAIT_MS) {
 
       eatingPeriodActive = false;
+
       Serial.println();
+
       startQuietTrial();
     }
 
@@ -723,49 +804,27 @@ void updateEatingPeriod() {
       unsigned long remaining =
         TREAT_EATING_WAIT_MS - elapsed;
 
-      printCountdown("EAT", remaining, TREAT_EATING_WAIT_MS);
+      printCountdown(
+        "EAT",
+        remaining,
+        TREAT_EATING_WAIT_MS
+      );
     }
   }
 }
-// =====================================================
-// FAIL CURRENT TRIAL
-// =====================================================
 
-void failCurrentTrial(const SoundReading& sound) {
-
-  if (!trialActive) return;
-  unsigned long now = millis();
-  unsigned long previousQuietTime = now - quietStartTime;
-
-  trialActive = false;
-  failedTrials++;
-  waitingForQuietAfterFailure = true;
-
-  resetCountdownDisplay();
-
-  Serial.println();
-  Serial.print(F("[FAIL] #"));
-  Serial.print(totalTrials);
-
-  Serial.print(F(" | quiet="));
-  Serial.print(previousQuietTime / 1000.0, 1);
-  Serial.print('s');
-
-  printSoundInfo(sound);
-
-  Serial.println();
-
-  Serial.println(F("[WAIT] Waiting for quiet"));
-}
 
 // =====================================================
-// CHECK SOUND
+// SOUND CHECK / TRIAL FAILURE DETECTION
 // =====================================================
 
 void checkSound() {
 
   if (!sessionActive) return;
 
+  // Never monitor sound while Coco is receiving or eating
+  // a reward. This prevents dispensing noises from failing
+  // a trial.
   if (eatingPeriodActive || servoDispensing) return;
 
   if (!trialActive && !waitingForQuietAfterFailure) return;
@@ -780,16 +839,9 @@ void checkSound() {
 
   SoundReading sound = measureSound();
 
-  // Save latest readings for the status line.
-  latestSoundLevel = sound.soundLevel;
-  latestSoundMinimum = sound.minimum;
-  latestSoundMaximum = sound.maximum;
-
-  haveSoundReading = true;
-
-  // ==========================================
+  // -----------------------------------------
   // ACTIVE TRIAL
-  // ==========================================
+  // -----------------------------------------
 
   if (trialActive) {
 
@@ -799,26 +851,31 @@ void checkSound() {
     }
   }
 
-  // ==========================================
+  // -----------------------------------------
   // WAITING FOR QUIET AFTER FAILURE
-  // ==========================================
+  // -----------------------------------------
 
   else if (waitingForQuietAfterFailure) {
 
     if (sound.soundLevel < WHIMPER_THRESHOLD) {
 
       waitingForQuietAfterFailure = false;
-      Serial.println(F("[QUIET] Detected | Starting next trial"));
+
+      Serial.println(
+        F("[QUIET] Detected | Starting next trial")
+      );
+
       startQuietTrial();
     }
 
     else {
 
-      // Compact sound output while waiting.
+      // Periodic sound output while waiting for quiet.
       if (PRINT_SOUND_READINGS &&
           now - lastStatusPrintTime >= SOUND_DEBUG_INTERVAL_MS) {
 
         lastStatusPrintTime = now;
+
         Serial.print(F("[WAIT] S="));
         Serial.print(sound.soundLevel);
 
@@ -829,8 +886,9 @@ void checkSound() {
   }
 }
 
+
 // =====================================================
-// UPDATE QUIET TIMER
+// QUIET TIMER
 // =====================================================
 
 void updateQuietTimer() {
@@ -844,42 +902,49 @@ void updateQuietTimer() {
 
     successfulTrial();
   }
+
   else {
 
     unsigned long remaining =
       quietDurationMs - quietElapsed;
 
-    printCountdown("QUIET", remaining, quietDurationMs);
+    printCountdown(
+      "QUIET",
+      remaining,
+      quietDurationMs
+    );
   }
 }
 
 
 // =====================================================
-// START SESSION
+// SESSION MANAGEMENT
 // =====================================================
+
+// -----------------------------------------------------
+// Start session
+// -----------------------------------------------------
 
 void startSession() {
 
   if (sessionActive) return;
 
   sessionActive = true;
+
   sessionStartTime = millis();
+
   waitingForQuietAfterFailure = false;
+
   eatingPeriodActive = false;
   eatingPeriodPending = false;
-  eatingPeriodStartTime = 0;
+
   lastStatusPrintTime = 0;
-  haveSoundReading = false;
-  sessionDurationMs = SESSION_DURATION_MS;
+  lastSoundCheck = 0;
 
   totalTrials = 0;
   successfulTrials = 0;
   failedTrials = 0;
 
-  eatingPeriodActive = false;
-  eatingPeriodStartTime = 0;
-
-  lastSoundCheck = 0;
   Serial.println();
   Serial.println(F("=== COCO REWARD SYSTEM ==="));
 
@@ -889,43 +954,53 @@ void startSession() {
   Serial.print(F(" | Session "));
 
   if (SESSION_MINUTES == 0) {
+
     Serial.println(F("Unlimited"));
   }
+
   else {
+
     Serial.print(SESSION_MINUTES);
     Serial.println(F(" min"));
   }
 
-  Serial.println(F("[STARTED] Short press=start | Hold=stop"));
+  Serial.println(
+    F("[STARTED] Short press=start | Hold=stop")
+  );
 
   startQuietTrial();
 }
 
 
-// =====================================================
-// STOP SESSION
-// =====================================================
+// -----------------------------------------------------
+// Stop session
+// -----------------------------------------------------
 
 void stopSession() {
 
   if (!sessionActive) return;
 
   sessionActive = false;
+
   trialActive = false;
+
   waitingForQuietAfterFailure = false;
+
   eatingPeriodActive = false;
   eatingPeriodPending = false;
-  servoWaitingForNextCycle = false;
 
   // Stop any queued dispensing.
   portionsRemaining = 0;
+
   servoIsOpen = false;
   servoDispensing = false;
+  servoWaitingForNextCycle = false;
 
   pelletServo.write(SERVO_CLOSED);
 
   Serial.println();
   Serial.println();
+
   Serial.println(F("======= SESSION SUMMARY ======="));
 
   Serial.print(F("Pass: "));
@@ -936,12 +1011,15 @@ void stopSession() {
 
   // Total completed trials = passes + failures.
   // An unfinished trial is intentionally excluded.
-  int completedTrials = successfulTrials + failedTrials;
+  int completedTrials =
+    successfulTrials + failedTrials;
 
   float passRate = 0.0;
 
   if (completedTrials > 0) {
-    passRate = successfulTrials * 100.0 / completedTrials;
+
+    passRate =
+      successfulTrials * 100.0 / completedTrials;
   }
 
   Serial.print(F("Completed: "));
@@ -959,9 +1037,9 @@ void stopSession() {
 }
 
 
-// =====================================================
-// UPDATE SESSION TIMER
-// =====================================================
+// -----------------------------------------------------
+// Automatic session timeout
+// -----------------------------------------------------
 
 void updateSession() {
 
@@ -970,7 +1048,7 @@ void updateSession() {
   // Zero means unlimited session.
   if (SESSION_MINUTES == 0) return;
 
-  if (millis() - sessionStartTime >= sessionDurationMs) {
+  if (millis() - sessionStartTime >= SESSION_DURATION_MS) {
 
     stopSession();
   }
@@ -978,7 +1056,7 @@ void updateSession() {
 
 
 // =====================================================
-// BUTTON HANDLING
+// BUTTON MANAGEMENT
 // =====================================================
 
 void updateButton() {
@@ -995,7 +1073,10 @@ void updateButton() {
     return;
   }
 
-  // Detect button state change.
+  // -----------------------------------------
+  // Detect button state change
+  // -----------------------------------------
+
   if (reading != stableButtonState) {
 
     stableButtonState = reading;
@@ -1011,12 +1092,16 @@ void updateButton() {
     else {
 
       if (!longPressHandled) {
+
         handleShortPress();
       }
     }
   }
 
-  // Detect long press.
+  // -----------------------------------------
+  // Detect long press
+  // -----------------------------------------
+
   if (stableButtonState == LOW &&
       !longPressHandled &&
       millis() - buttonDownTime >= BUTTON_LONG_PRESS_MS) {
@@ -1028,9 +1113,9 @@ void updateButton() {
 }
 
 
-// =====================================================
-// SHORT BUTTON PRESS
-// =====================================================
+// -----------------------------------------------------
+// Short button press
+// -----------------------------------------------------
 
 void handleShortPress() {
 
@@ -1038,6 +1123,7 @@ void handleShortPress() {
 
     startSession();
   }
+
   else {
 
     Serial.println(F("[INFO] Session already running."));
@@ -1045,9 +1131,9 @@ void handleShortPress() {
 }
 
 
-// =====================================================
-// LONG BUTTON PRESS
-// =====================================================
+// -----------------------------------------------------
+// Long button press
+// -----------------------------------------------------
 
 void handleLongPress() {
 
@@ -1055,6 +1141,7 @@ void handleLongPress() {
 
     stopSession();
   }
+
   else {
 
     Serial.println(F("[INFO] No active session."));
@@ -1063,7 +1150,7 @@ void handleLongPress() {
 
 
 // =====================================================
-// SETUP
+// ARDUINO SETUP
 // =====================================================
 
 void setup() {
@@ -1096,6 +1183,7 @@ void setup() {
 
   Serial.println(F("Short press: Start session"));
   Serial.println(F("Long press: Stop session"));
+
   Serial.println(F("Ready."));
   Serial.println();
 }

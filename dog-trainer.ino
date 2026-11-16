@@ -14,8 +14,15 @@ const int STEPS_PER_REVOLUTION = 2048;
 const int MOTOR_SPEED_RPM = 10;
 
 // Sound detection
-const int SOUND_THRESHOLD = 20;
+const int BARKING_THRESHOLD = 10;
+const int WHIMPER_THRESHOLD = 5;
 const unsigned long SOUND_SAMPLE_MS = 50;
+
+// Which sounds reset the quietness timer?
+const char* SOUND_WHIMPER = "[!] WHIMPER";
+const char* SOUND_BARKING = "[!!!] BARKING";
+const bool BARKING_RESETS_TIMER = true;
+const bool WHIMPER_RESETS_TIMER = true;
 
 // Reward timing
 const unsigned long REWARD_PAUSE_MS = 2000;
@@ -40,7 +47,6 @@ const unsigned long LOG_INTERVAL_MS = 1000;
 // 2. HARDWARE OBJECTS
 // ==========================================
 
-// Keep this pin order for the ULN2003 driver
 Stepper motor(
   STEPS_PER_REVOLUTION,
   8, 10, 9, 11
@@ -79,14 +85,12 @@ unsigned long lastDebounceTime = 0;
 void setup() {
 
   Serial.begin(9600);
-
   pinMode(SWITCH_PIN, INPUT_PULLUP);
-
   motor.setSpeed(MOTOR_SPEED_RPM);
-
   Serial.println();
   Serial.println("DOG QUIETNESS TRAINING");
   Serial.println("SYSTEM OFF");
+  Serial.println("Press button to start.");
 }
 
 
@@ -96,7 +100,7 @@ void setup() {
 
 void loop() {
 
-  // Check button and toggle system if necessary
+  // Check button
   checkButton();
 
   // Do nothing while system is off
@@ -104,31 +108,40 @@ void loop() {
     return;
   }
 
-  // Handle eating/dispensing pause
+  // Handle eating pause
   if (handleRewardPause()) {
     return;
   }
 
-  // Measure ambient sound
-  int soundLevel = measureSound();
+  // Measure sound
+  int minimum;
+  int maximum;
 
-  // Check whether noise was detected
-  if (soundLevel >= SOUND_THRESHOLD) {
+  int soundLevel = measureSound(minimum, maximum);
+
+  // ----------------------------------------
+  // BARKING DETECTED
+  // ----------------------------------------
+  if (soundLevel >= BARKING_THRESHOLD && BARKING_RESETS_TIMER){
+    
+    printSoundInfo(SOUND_BARKING, minimum, maximum, soundLevel);
+    resetQuietTimer();
+    return;
+  }
+  else if (soundLevel >= WHIMPER_THRESHOLD && WHIMPER_RESETS_TIMER) {
+    printSoundInfo(SOUND_WHIMPER, minimum, maximum, soundLevel);
     resetQuietTimer();
     return;
   }
 
-  // Start quietness timer if necessary
-  startQuietTimer();
+  // ----------------------------------------
+  // QUIETNESS TIMER
+  // ----------------------------------------
 
-  // Calculate elapsed quiet time
+  startQuietTimer();
   unsigned long now = millis();
   unsigned long quietDuration = now - quietStart;
-
-  // Print quietness progress
   logQuietProgress(now, quietDuration);
-
-  // Check whether reward target has been reached
   checkRewardTarget(quietDuration);
 }
 
@@ -140,24 +153,15 @@ void loop() {
 void checkButton() {
 
   bool reading = digitalRead(SWITCH_PIN);
-
-  // Detect a change in button state
   if (reading != lastButtonState) {
     lastDebounceTime = millis();
   }
 
-  // Wait for stable button state
   if (millis() - lastDebounceTime > DEBOUNCE_DELAY_MS) {
-
     if (reading != buttonState) {
-
       buttonState = reading;
-
-      // Button pressed (INPUT_PULLUP means LOW)
       if (buttonState == LOW) {
-
         systemOn = !systemOn;
-
         if (systemOn) {
           startSystem();
         } else {
@@ -166,7 +170,6 @@ void checkButton() {
       }
     }
   }
-
   lastButtonState = reading;
 }
 
@@ -177,24 +180,14 @@ void checkButton() {
 
 void startSystem() {
 
-  // Reset timers and reward schedule
   scheduleIndex = 0;
-
   quietTimerRunning = false;
   quietStart = 0;
   lastLog = 0;
-
   inRewardPause = false;
   rewardPauseStart = 0;
-
   Serial.println();
   Serial.println("SYSTEM ON");
-
-  // Dispense initial treat
-  Serial.println("DISPENSING INITIAL TREAT");
-
-  dispenseTreat();
-
   Serial.print("First reward target: ");
   Serial.print(rewardSchedule[scheduleIndex]);
   Serial.println(" seconds");
@@ -203,16 +196,12 @@ void startSystem() {
 
 void stopSystem() {
 
-  // Reset everything
   scheduleIndex = 0;
-
   quietTimerRunning = false;
   quietStart = 0;
   lastLog = 0;
-
   inRewardPause = false;
   rewardPauseStart = 0;
-
   Serial.println();
   Serial.println("SYSTEM OFF");
   Serial.println("Reward schedule reset.");
@@ -226,53 +215,41 @@ void stopSystem() {
 void dispenseTreat() {
 
   Serial.println("STEPPER MOTOR ACTIVATED");
-
-  // One full revolution
   motor.step(STEPS_PER_REVOLUTION);
-
   Serial.println("TREAT DISPENSED");
 }
+
 
 // ==========================================
 // 9. SOUND MEASUREMENT
 // ==========================================
 
-int measureSound() {
+int measureSound(int &minimum, int &maximum) {
 
-  int minimum = 1023;
-  int maximum = 0;
-
+  minimum = 1023;
+  maximum = 0;
   unsigned long sampleStart = millis();
 
   while (millis() - sampleStart < SOUND_SAMPLE_MS) {
-
     int reading = analogRead(SOUND_PIN);
-
     if (reading < minimum) {
       minimum = reading;
     }
-
     if (reading > maximum) {
       maximum = reading;
     }
   }
+  return maximum - minimum;
+}
 
-  int soundLevel = maximum - minimum;
-
-  // Print actual sound measurements
-  Serial.print("Sound Level: ");
-  Serial.print(soundLevel);
-
-  Serial.print(" | Threshold: ");
-  Serial.print(SOUND_THRESHOLD);
-
-  if (soundLevel >= SOUND_THRESHOLD) {
-    Serial.println(" | SOUND DETECTED!");
-  } else {
-    Serial.println(" | QUIET");
-  }
-
-  return soundLevel;
+void printSoundInfo(const char* soundType, int minimum, int maximum, int soundLevel) {
+  Serial.print(soundType);
+  Serial.print(" | Min: ");
+  Serial.print(minimum);
+  Serial.print(" | Max: ");
+  Serial.print(maximum);
+  Serial.print(" | Sound Level: ");
+  Serial.println(soundLevel);
 }
 
 // ==========================================
@@ -282,42 +259,32 @@ int measureSound() {
 void startQuietTimer() {
 
   if (!quietTimerRunning) {
-
     quietTimerRunning = true;
-
     quietStart = millis();
     lastLog = quietStart;
-
     Serial.print("QUIET START - Target: ");
-
     Serial.print(rewardSchedule[scheduleIndex]);
-
     Serial.println(" seconds");
   }
 }
 
 
-
 void resetQuietTimer() {
 
   if (quietTimerRunning) {
-    Serial.println("BARKING DETECTED - TIMER RESET");
+    Serial.println("**********TIMER RESET**********");
   }
-
-  // Reset quietness timer
   quietTimerRunning = false;
   quietStart = 0;
   lastLog = 0;
 
-  // Reset reward schedule to the beginning
+  // Reset reward schedule
   if (scheduleIndex != 0) {
     scheduleIndex = 0;
-
     Serial.println("REWARD SCHEDULE RESET");
     Serial.println("NEXT REWARD TARGET: 3 seconds");
   }
 }
-
 
 // ==========================================
 // 11. QUIETNESS PROGRESS LOGGING
@@ -329,15 +296,11 @@ void logQuietProgress(
 ) {
 
   if (now - lastLog >= LOG_INTERVAL_MS) {
-
     lastLog += LOG_INTERVAL_MS;
-
     Serial.print(quietDuration / 1000);
-
     Serial.println(",QUIET");
   }
 }
-
 
 // ==========================================
 // 12. REWARD TARGET CHECK
@@ -345,46 +308,30 @@ void logQuietProgress(
 
 void checkRewardTarget(unsigned long quietDuration) {
 
-  unsigned long targetDuration =
-    (unsigned long)rewardSchedule[scheduleIndex] * 1000UL;
+  unsigned long targetDuration = (unsigned long)rewardSchedule[scheduleIndex] * 1000UL;
 
-  // Has the dog remained quiet long enough?
   if (quietDuration >= targetDuration) {
-
     Serial.print(quietDuration / 1000);
-
     Serial.println(",DISPENSE TREAT");
 
-    // Dispense actual treat
+    // Uncomment to activate automatic treat dispensing
     // dispenseTreat();
 
-    // Advance reward schedule
     advanceRewardSchedule();
 
-    // Start eating pause AFTER dispensing
     inRewardPause = true;
     rewardPauseStart = millis();
-
-    // Reset quietness timer
     quietTimerRunning = false;
-
     quietStart = 0;
     lastLog = 0;
-
     Serial.print("PAUSING FOR ");
-
     Serial.print(REWARD_PAUSE_MS / 1000);
-
     Serial.println(" SECONDS");
-
     Serial.print("NEXT REWARD TARGET: ");
-
     Serial.print(rewardSchedule[scheduleIndex]);
-
     Serial.println(" seconds");
   }
 }
-
 
 // ==========================================
 // 13. REWARD SCHEDULE
@@ -393,15 +340,11 @@ void checkRewardTarget(unsigned long quietDuration) {
 void advanceRewardSchedule() {
 
   scheduleIndex++;
-
   if (scheduleIndex >= SCHEDULE_LENGTH) {
-
     scheduleIndex = 0;
-
     Serial.println("REWARD CYCLE RESTARTED");
   }
 }
-
 
 // ==========================================
 // 14. POST-REWARD PAUSE
@@ -413,21 +356,15 @@ bool handleRewardPause() {
     return false;
   }
 
-  // Check whether eating pause has finished
   if (millis() - rewardPauseStart >= REWARD_PAUSE_MS) {
-
     inRewardPause = false;
-
     quietTimerRunning = false;
     quietStart = 0;
     lastLog = 0;
-
     Serial.println("EATING PAUSE COMPLETE");
     Serial.println("STARTING NEW QUIET TIMER");
-
     return false;
   }
 
-  // Still in eating pause
   return true;
 }

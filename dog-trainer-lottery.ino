@@ -73,18 +73,13 @@ const int WHIMPER_THRESHOLD = 5;
 const float SOUND_SAMPLE_WINDOW_SEC = 0.05;
 const float SOUND_CHECK_INTERVAL_SEC = 0.25;
 
-
 // -----------------------------------------------------
-// WAITING / EATING TIMING
+// SERVO AND EATING TIMING
 // -----------------------------------------------------
 
 // Pause after dispensing has completely finished.
 const unsigned long TREAT_EATING_WAIT_SEC = 5;
 
-
-// -----------------------------------------------------
-// SERVO TIMING
-// -----------------------------------------------------
 
 // Delay between individual dispensing cycles (SECONDS).
 const unsigned long SERVO_CYCLE_DELAY_SEC = 3;
@@ -97,6 +92,12 @@ const unsigned long SERVO_CLOSED_MS = 300;
 const int SERVO_CLOSED = 0;
 const int SERVO_OPEN = 90;
 
+// Ensure eating time is at least as long as the
+// delay between servo dispensing cycles.
+static_assert(
+  TREAT_EATING_WAIT_SEC >= SERVO_CYCLE_DELAY_SEC,
+  "ERROR: Eating time must be >= servo cycle delay!"
+);
 
 // -----------------------------------------------------
 // HARDWARE PIN CONFIGURATION
@@ -579,21 +580,29 @@ void dispensePellets(int portions) {
 }
 
 
+
 void updateServo() {
 
   if (!servoDispensing) return;
 
   unsigned long now = millis();
 
-  // -----------------------------------------
+  // ==========================================
   // WAITING BETWEEN DISPENSING CYCLES
-  // -----------------------------------------
+  // ==========================================
 
   if (servoWaitingForNextCycle) {
 
-    if (now - servoStateStart >= SERVO_CYCLE_DELAY_MS) {
+    unsigned long elapsed = now - servoStateStart;
+
+    if (elapsed >= SERVO_CYCLE_DELAY_MS) {
+
+      Serial.println();
+      resetCountdownDisplay();
 
       servoWaitingForNextCycle = false;
+
+      Serial.println(F("[SERVO] Wait complete | Starting next cycle"));
 
       pelletServo.write(SERVO_OPEN);
 
@@ -601,12 +610,24 @@ void updateServo() {
       servoStateStart = now;
     }
 
+    else {
+
+      unsigned long remaining =
+        SERVO_CYCLE_DELAY_MS - elapsed;
+
+      printCountdown(
+        "SERVO WAIT",
+        remaining,
+        SERVO_CYCLE_DELAY_MS
+      );
+    }
+
     return;
   }
 
-  // -----------------------------------------
+  // ==========================================
   // SERVO IS CURRENTLY OPEN
-  // -----------------------------------------
+  // ==========================================
 
   if (servoIsOpen) {
 
@@ -619,9 +640,9 @@ void updateServo() {
     }
   }
 
-  // -----------------------------------------
+  // ==========================================
   // SERVO IS CURRENTLY CLOSED
-  // -----------------------------------------
+  // ==========================================
 
   else {
 
@@ -635,19 +656,20 @@ void updateServo() {
 
       if (portionsRemaining > 0) {
 
-        // Wait before starting the next dispensing cycle.
         servoWaitingForNextCycle = true;
         servoStateStart = now;
+
+        resetCountdownDisplay();
       }
 
       else {
 
         servoDispensing = false;
+        Serial.println(F("[DISPENSE] Complete"));
       }
     }
   }
 }
-
 
 // =====================================================
 // TRIAL MANAGEMENT

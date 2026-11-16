@@ -6,7 +6,7 @@
 // ==========================================
 
 // Hardware pins
-const int SOUND_PIN = A0;
+const int SOUND_PIN = A2;
 const int SWITCH_PIN = 2;
 
 // Stepper motor
@@ -297,16 +297,25 @@ void startQuietTimer() {
 }
 
 
+
 void resetQuietTimer() {
 
   if (quietTimerRunning) {
-    Serial.println("SOUND DETECTED - TIMER RESET");
+    Serial.println("BARKING DETECTED - TIMER RESET");
   }
 
+  // Reset quietness timer
   quietTimerRunning = false;
-
   quietStart = 0;
   lastLog = 0;
+
+  // Reset reward schedule to the beginning
+  if (scheduleIndex != 0) {
+    scheduleIndex = 0;
+
+    Serial.println("REWARD SCHEDULE RESET");
+    Serial.println("NEXT REWARD TARGET: 3 seconds");
+  }
 }
 
 

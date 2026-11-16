@@ -183,71 +183,147 @@ const bool SHOW_COUNTDOWNS = true;
 const unsigned long SOUND_DEBUG_INTERVAL_MS =
   (unsigned long)(SOUND_DEBUG_INTERVAL_SEC * 1000.0);
 
-unsigned long lastSoundDebugTime = 0;
-int lastCountdownBucket = -1;
+unsigned long lastStatusPrintTime = 0;
+
+bool countdownStarted = false;
+int lastLoggedSecond = -1;
+int countdownEntriesOnLine = 0;
+unsigned long nextLongCheckpoint = 1;
+
+// Latest sound reading for compact status display.
+int latestSoundLevel = 0;
+int latestSoundMinimum = 0;
+int latestSoundMaximum = 0;
+
+bool haveSoundReading = false;
+
 
 // =====================================================
-// COUNTDOWN DISPLAY
+// COMPACT STATUS / COUNTDOWN DISPLAY
 // =====================================================
 
 void resetCountdownDisplay() {
-  lastCountdownBucket = -1;
+
+  countdownStarted = false;
+  lastLoggedSecond = -1;
+  countdownEntriesOnLine = 0;
+  nextLongCheckpoint = 1;
 }
 
-void printCountdown(const char* label, unsigned long remainingMs) {
+
+void printCountdown(
+  const char* label,
+  unsigned long remainingMs,
+  unsigned long totalMs
+) {
 
   if (!SHOW_COUNTDOWNS) return;
 
-  // Round up so we don't prematurely show zero.
   unsigned long remainingSec =
     (remainingMs + 999UL) / 1000UL;
 
-  int displayBucket;
+  unsigned long elapsedSec =
+    (totalMs - remainingMs) / 1000UL;
 
-  // Under 60 seconds: update every second.
-  if (remainingSec < 60) {
-    displayBucket = remainingSec;
-  }
+  bool shortTimer = totalMs <= 10000UL;
 
-  // 1 minute or more: update every 10 seconds.
-  else {
-    displayBucket = ((remainingSec + 9) / 10) * 10;
-  }
+  // Start a new countdown line.
+  if (!countdownStarted) {
 
-  // Only redraw when the displayed time changes.
-  if (displayBucket == lastCountdownBucket) return;
+    countdownStarted = true;
 
-  lastCountdownBucket = displayBucket;
+    Serial.println(F("---------------------------"));
 
-  Serial.print('\r');
-  Serial.print('[');
-  Serial.print(label);
-  Serial.print(F("] "));
+    Serial.print('[');
+    Serial.print(label);
+    Serial.print(F("] "));
 
-  if (displayBucket < 60) {
+    if (remainingSec < 10) Serial.print('0');
 
-    Serial.print(displayBucket);
-    Serial.print(F(" seconds remaining"));
-  }
+    Serial.print(remainingSec);
+    Serial.print(F("s | "));
 
-  else {
+    // Short timers log their remaining seconds.
+    if (shortTimer) {
 
-    Serial.print(displayBucket / 60);
-    Serial.print(F("m "));
+      Serial.print(remainingSec);
+      Serial.print('s');
 
-    if (displayBucket % 60 < 10) {
-      Serial.print('0');
+      lastLoggedSecond = remainingSec;
+      countdownEntriesOnLine = 1;
     }
 
-    Serial.print(displayBucket % 60);
-    Serial.print(F("s remaining"));
+    return;
   }
 
-  // Clear leftover characters from longer previous messages.
-  Serial.print(F("                    "));
+  bool shouldLog = false;
+  unsigned long checkpoint = 0;
+
+  // ==========================================
+  // SHORT TIMERS: LOG EVERY REMAINING SECOND
+  // ==========================================
+
+  if (shortTimer) {
+
+    if (remainingSec != (unsigned long)lastLoggedSecond &&
+        remainingSec > 0) {
+
+      checkpoint = remainingSec;
+      shouldLog = true;
+    }
+  }
+
+  // ==========================================
+  // LONG TIMERS: 1s, 10s, 20s, 30s...
+  // ==========================================
+
+  else {
+
+    if (elapsedSec >= nextLongCheckpoint) {
+
+      checkpoint = nextLongCheckpoint;
+      shouldLog = true;
+
+      if (nextLongCheckpoint == 1) {
+        nextLongCheckpoint = 10;
+      }
+      else {
+        nextLongCheckpoint += 10;
+      }
+    }
+  }
+
+  if (!shouldLog) return;
+
+  // Start another line after 10 entries.
+  if (countdownEntriesOnLine >= 10) {
+
+    Serial.println();
+
+    Serial.print('[');
+    Serial.print(label);
+    Serial.print(F("] "));
+
+    if (remainingSec < 10) Serial.print('0');
+
+    Serial.print(remainingSec);
+    Serial.print(F("s | "));
+
+    countdownEntriesOnLine = 0;
+  }
+
+  else {
+
+    Serial.print(F(", "));
+  }
+
+  Serial.print(checkpoint);
+  Serial.print('s');
+
+  countdownEntriesOnLine++;
+
+  lastLoggedSecond = checkpoint;
 }
-
-
 // =====================================================
 // TRAINING STAGES
 // =====================================================
@@ -257,49 +333,48 @@ void printCountdown(const char* label, unsigned long remainingMs) {
 
 const RewardStage stages[] = {
 
-  // Stage 1: Foundation
+  // Stage 1: Foundation [1–5 seconds]
   {1000UL, 5000UL},
 
-  // Stage 2: Early confidence
+  // Stage 2: Early confidence [5–8 seconds]
   {5000UL, 8000UL},
 
-  // Stage 3: Confidence
+  // Stage 3: Confidence [8–12 seconds]
   {8000UL, 12000UL},
 
-  // Stage 4: Building
+  // Stage 4: Building [12–20 seconds]
   {12000UL, 20000UL},
 
-  // Stage 5: Intermediate
+  // Stage 5: Intermediate [20–30 seconds]
   {20000UL, 30000UL},
 
-  // Stage 6: Extended
+  // Stage 6: Extended [30–60 seconds]
   {30000UL, 60000UL},
 
-  // Stage 7
+  // Stage 7 [1–2 minutes]
   {60000UL, 120000UL},
 
-  // Stage 8
+  // Stage 8 [2–4 minutes]
   {120000UL, 240000UL},
 
-  // Stage 9
+  // Stage 9: Lottery begins [4–8 minutes]
   {240000UL, 480000UL},
 
-  // Stage 10
+  // Stage 10 [8–15 minutes]
   {480000UL, 900000UL},
 
-  // Stage 11
+  // Stage 11 [15–30 minutes]
   {900000UL, 1800000UL},
 
-  // Stage 12
+  // Stage 12 [30–60 minutes]
   {1800000UL, 3600000UL},
 
-  // Stage 13
+  // Stage 13 [1–2 hours]
   {3600000UL, 7200000UL},
 
-  // Stage 14: Long-term goal
+  // Stage 14: Long-term goal [2–4 hours]
   {7200000UL, 14400000UL}
 };
-
 const int TOTAL_STAGES =
   sizeof(stages) / sizeof(stages[0]);
 
@@ -345,10 +420,6 @@ void generateNextQuietDuration() {
     stage.minIntervalMs,
     stage.maxIntervalMs + 1UL
   );
-
-  Serial.print(F("[NEXT TRIAL] Quiet target: "));
-  Serial.print(quietDurationMs / 1000.0, 1);
-  Serial.println(F(" seconds"));
 }
 
 
@@ -409,17 +480,17 @@ const char* getSoundType(int soundLevel) {
 
 void printSoundInfo(const SoundReading& sound) {
 
-  Serial.print(F("Type: "));
+  Serial.print(F(" | "));
   Serial.print(getSoundType(sound.soundLevel));
 
-  Serial.print(F(" | Min: "));
+  Serial.print(F(" level="));
+  Serial.print(sound.soundLevel);
+
+  Serial.print(F(" ["));
   Serial.print(sound.minimum);
-
-  Serial.print(F(" | Max: "));
+  Serial.print('-');
   Serial.print(sound.maximum);
-
-  Serial.print(F(" | Level: "));
-  Serial.println(sound.soundLevel);
+  Serial.print(']');
 }
 
 
@@ -498,10 +569,9 @@ void updateServo() {
 
       portionsRemaining--;
 
-      Serial.print('\r');
-      Serial.print(F("[DISPENSING] "));
+      Serial.print(F("[DISPENSE] "));
       Serial.print(portionsRemaining);
-      Serial.println(F(" cycles remaining"));
+      Serial.println(F(" cycles left"));
 
       if (portionsRemaining > 0) {
 
@@ -529,18 +599,20 @@ void startQuietTrial() {
   if (!sessionActive) return;
   waitingForQuietAfterFailure = false;
   generateNextQuietDuration();
-
   quietStartTime = millis();
   trialActive = true;
-
   totalTrials++;
 
   resetCountdownDisplay();
-
   Serial.println();
+  Serial.println(F("==========================="));
+
   Serial.print(F("[TRIAL "));
   Serial.print(totalTrials);
-  Serial.println(F(" STARTED]"));
+  Serial.print(F(" START] target="));
+
+  Serial.print(quietDurationMs / 1000.0, 1);
+  Serial.println('s');
 }
 
 // =====================================================
@@ -548,47 +620,38 @@ void startQuietTrial() {
 // =====================================================
 
 void successfulTrial() {
-  
+
   if (!trialActive) return;
 
   trialActive = false;
+
   successfulTrials++;
+
   eatingPeriodPending = true;
 
   int reward = getLotteryReward();
 
   Serial.println();
-  Serial.println(F("========== REWARD =========="));
+  Serial.print(F("[PASS] #"));
+  Serial.print(totalTrials);
 
-  Serial.print(F("Successful trial: "));
-  Serial.println(successfulTrials);
-
-  Serial.print(F("Quiet duration: "));
+  Serial.print(F(" | "));
   Serial.print(quietDurationMs / 1000.0, 1);
-  Serial.println(F(" seconds"));
+  Serial.print(F("s"));
 
-  Serial.print(F("Reward: "));
+  Serial.print(F(" | reward="));
   Serial.print(reward);
-  Serial.println(F(" dispensing cycles"));
+  Serial.println('x');
 
   if (reward == JACKPOT_REWARD &&
       TRAINING_STAGE >= LOTTERY_START_STAGE) {
-
     Serial.println(F("*** JACKPOT! ***"));
   }
   else if (reward > NORMAL_REWARD) {
-
-    Serial.println(F("*** BONUS REWARD! ***"));
+    Serial.println(F("*** BONUS! ***"));
   }
 
-  Serial.println(F("============================"));
-  Serial.println();
-
-  // Dispense the reward.
   dispensePellets(reward);
-
-  // Do not start another trial yet.
-  // Wait for dispensing to finish first.
 }
 
 
@@ -611,12 +674,8 @@ void updateEatingPeriod() {
     eatingPeriodStartTime = millis();
 
     resetCountdownDisplay();
-
-    Serial.println();
-    Serial.println(F("[EATING] Treat dispensed."));
   }
 
-  // Update eating countdown.
   if (eatingPeriodActive) {
 
     unsigned long elapsed =
@@ -625,11 +684,7 @@ void updateEatingPeriod() {
     if (elapsed >= TREAT_EATING_WAIT_MS) {
 
       eatingPeriodActive = false;
-
       Serial.println();
-      Serial.println(F("[EATING COMPLETE]"));
-
-      // Begin another quiet trial.
       startQuietTrial();
     }
 
@@ -638,11 +693,10 @@ void updateEatingPeriod() {
       unsigned long remaining =
         TREAT_EATING_WAIT_MS - elapsed;
 
-      printCountdown("EATING", remaining);
+      printCountdown("EAT", remaining, TREAT_EATING_WAIT_MS);
     }
   }
 }
-
 // =====================================================
 // FAIL CURRENT TRIAL
 // =====================================================
@@ -650,43 +704,29 @@ void updateEatingPeriod() {
 void failCurrentTrial(const SoundReading& sound) {
 
   if (!trialActive) return;
-
   unsigned long now = millis();
+  unsigned long previousQuietTime = now - quietStartTime;
 
-  unsigned long previousQuietTime =
-    now - quietStartTime;
-
-  // End the current trial.
   trialActive = false;
-
-  // Record the failure.
   failedTrials++;
-
-  // Wait until Coco becomes quiet before starting again.
   waitingForQuietAfterFailure = true;
 
   resetCountdownDisplay();
 
   Serial.println();
-  Serial.println(F("========== TRIAL FAILED =========="));
+  Serial.print(F("[FAIL] #"));
+  Serial.print(totalTrials);
 
-  Serial.print(F("Failed trials: "));
-  Serial.println(failedTrials);
-
-  Serial.println(F("Reason: Vocalization detected"));
+  Serial.print(F(" | quiet="));
+  Serial.print(previousQuietTime / 1000.0, 1);
+  Serial.print('s');
 
   printSoundInfo(sound);
 
-  Serial.print(F("Previous quiet time: "));
-  Serial.print(previousQuietTime / 1000.0, 1);
-  Serial.println(F(" seconds"));
-
-  Serial.println(F("----------------------------------"));
-  Serial.println(F("[WAITING] Waiting for quiet..."));
-  Serial.println(F("=================================="));
   Serial.println();
-}
 
+  Serial.println(F("[WAIT] Waiting for quiet"));
+}
 
 // =====================================================
 // CHECK SOUND
@@ -696,12 +736,8 @@ void checkSound() {
 
   if (!sessionActive) return;
 
-  // Do not monitor while Coco is eating or the
-  // dispenser is operating.
   if (eatingPeriodActive || servoDispensing) return;
 
-  // Only monitor during an active trial or while
-  // waiting for quiet after a failed trial.
   if (!trialActive && !waitingForQuietAfterFailure) return;
 
   unsigned long now = millis();
@@ -714,14 +750,12 @@ void checkSound() {
 
   SoundReading sound = measureSound();
 
-  // Optional sound monitoring.
-  if (PRINT_SOUND_READINGS &&
-      now - lastSoundDebugTime >= SOUND_DEBUG_INTERVAL_MS) {
+  // Save latest readings for the status line.
+  latestSoundLevel = sound.soundLevel;
+  latestSoundMinimum = sound.minimum;
+  latestSoundMaximum = sound.maximum;
 
-    printSoundInfo(sound);
-
-    lastSoundDebugTime = now;
-  }
+  haveSoundReading = true;
 
   // ==========================================
   // ACTIVE TRIAL
@@ -729,7 +763,6 @@ void checkSound() {
 
   if (trialActive) {
 
-    // Any vocalization fails the current trial.
     if (sound.soundLevel >= WHIMPER_THRESHOLD) {
 
       failCurrentTrial(sound);
@@ -742,22 +775,29 @@ void checkSound() {
 
   else if (waitingForQuietAfterFailure) {
 
-    // Start a new trial once Coco becomes quiet.
     if (sound.soundLevel < WHIMPER_THRESHOLD) {
 
       waitingForQuietAfterFailure = false;
-
-      Serial.println();
-      Serial.println(F("[QUIET DETECTED]"));
-
-      Serial.println(F("[NEXT TRIAL] Starting new trial."));
-      Serial.println();
-
+      Serial.println(F("[QUIET] Detected | Starting next trial"));
       startQuietTrial();
+    }
+
+    else {
+
+      // Compact sound output while waiting.
+      if (PRINT_SOUND_READINGS &&
+          now - lastStatusPrintTime >= SOUND_DEBUG_INTERVAL_MS) {
+
+        lastStatusPrintTime = now;
+        Serial.print(F("[WAIT] S="));
+        Serial.print(sound.soundLevel);
+
+        Serial.print(' ');
+        Serial.print(getSoundType(sound.soundLevel));
+      }
     }
   }
 }
-
 
 // =====================================================
 // UPDATE QUIET TIMER
@@ -779,7 +819,7 @@ void updateQuietTimer() {
     unsigned long remaining =
       quietDurationMs - quietElapsed;
 
-    printCountdown("QUIET", remaining);
+    printCountdown("QUIET", remaining, quietDurationMs);
   }
 }
 
@@ -798,6 +838,8 @@ void startSession() {
   eatingPeriodActive = false;
   eatingPeriodPending = false;
   eatingPeriodStartTime = 0;
+  lastStatusPrintTime = 0;
+  haveSoundReading = false;
   sessionDurationMs = SESSION_DURATION_MS;
 
   totalTrials = 0;
@@ -808,28 +850,23 @@ void startSession() {
   eatingPeriodStartTime = 0;
 
   lastSoundCheck = 0;
-
   Serial.println();
-  Serial.println(F("================================"));
-  Serial.println(F("       COCO REWARD SYSTEM"));
-  Serial.println(F("================================"));
+  Serial.println(F("=== COCO REWARD SYSTEM ==="));
 
-  Serial.print(F("Training stage: "));
-  Serial.println(TRAINING_STAGE);
+  Serial.print(F("Stage "));
+  Serial.print(TRAINING_STAGE);
 
-  Serial.print(F("Session duration: "));
+  Serial.print(F(" | Session "));
 
   if (SESSION_MINUTES == 0) {
     Serial.println(F("Unlimited"));
   }
   else {
     Serial.print(SESSION_MINUTES);
-    Serial.println(F(" minutes"));
+    Serial.println(F(" min"));
   }
 
-  Serial.println(F("Session started!"));
-  Serial.println(F("Press and hold button to stop."));
-  Serial.println(F("--------------------------------"));
+  Serial.println(F("[STARTED] Short press=start | Hold=stop"));
 
   startQuietTrial();
 }
@@ -856,37 +893,37 @@ void stopSession() {
 
   pelletServo.write(SERVO_CLOSED);
 
-  unsigned long elapsed =
-    millis() - sessionStartTime;
+  Serial.println();
+  Serial.println(F("======= SESSION SUMMARY ======="));
 
-    Serial.println();
-  Serial.println(F("========== SESSION SUMMARY =========="));
-
-  Serial.print(F("Total trials: "));
-  Serial.print(totalTrials);
-
-  Serial.print(F(" | Passed: "));
+  Serial.print(F("Pass: "));
   Serial.print(successfulTrials);
 
-  Serial.print(F(" | Failed: "));
+  Serial.print(F(" | Fail: "));
   Serial.println(failedTrials);
+
+  // Total completed trials = passes + failures.
+  // An unfinished trial is intentionally excluded.
+  int completedTrials = successfulTrials + failedTrials;
 
   float passRate = 0.0;
 
-  if (totalTrials > 0) {
-    passRate = (successfulTrials * 100.0) / totalTrials;
+  if (completedTrials > 0) {
+    passRate = successfulTrials * 100.0 / completedTrials;
   }
+
+  Serial.print(F("Completed: "));
+  Serial.println(completedTrials);
 
   Serial.print(F("Pass rate: "));
   Serial.print(passRate, 1);
-  Serial.println(F("%"));
+  Serial.println('%');
 
-  Serial.print(F("Session time: "));
-  Serial.print(elapsed / 60000.0, 1);
-  Serial.println(F(" minutes"));
+  Serial.print(F("Duration: "));
+  Serial.print((millis() - sessionStartTime) / 60000.0, 1);
+  Serial.println(F(" min"));
 
-  Serial.println(F("====================================="));
-  Serial.println();
+  Serial.println(F("==============================="));
 }
 
 

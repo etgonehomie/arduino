@@ -1,5 +1,6 @@
+#include <Servo.h>
 
-#include <Stepper.h>
+Servo pelletServo;
 
 // ==========================================
 // 1. CONFIGURATION
@@ -8,10 +9,8 @@
 // Hardware pins
 const int SOUND_PIN = A2;
 const int SWITCH_PIN = 2;
+const int SERVO_PIN = 9;
 
-// Stepper motor
-const int STEPS_PER_REVOLUTION = 2048;
-const int MOTOR_SPEED_RPM = 10;
 
 // Sound detection
 const int BARKING_THRESHOLD = 10;
@@ -44,14 +43,10 @@ const unsigned long LOG_INTERVAL_MS = 1000;
 
 
 // ==========================================
-// 2. HARDWARE OBJECTS
+// 2. MOTOR OBJECT
 // ==========================================
-
-Stepper motor(
-  STEPS_PER_REVOLUTION,
-  8, 10, 9, 11
-);
-
+const int SERVO_CLOSED = 0;
+const int SERVO_OPEN = 90;
 
 // ==========================================
 // 3. SYSTEM VARIABLES
@@ -86,7 +81,8 @@ void setup() {
 
   Serial.begin(9600);
   pinMode(SWITCH_PIN, INPUT_PULLUP);
-  motor.setSpeed(MOTOR_SPEED_RPM);
+  pelletServo.attach(SERVO_PIN);
+  pelletServo.write(SERVO_CLOSED);
   Serial.println();
   Serial.println("DOG QUIETNESS TRAINING");
   Serial.println("SYSTEM OFF");
@@ -209,14 +205,17 @@ void stopSystem() {
 
 
 // ==========================================
-// 8. STEPPER MOTOR / TREAT DISPENSING
+// 8. MOTOR / TREAT DISPENSING
 // ==========================================
 
 void dispenseTreat() {
 
-  Serial.println("STEPPER MOTOR ACTIVATED");
-  motor.step(STEPS_PER_REVOLUTION);
-  Serial.println("TREAT DISPENSED");
+  Serial.println("MOTOR ACTIVATED");
+  pelletServo.write(SERVO_OPEN);
+  delay(500);
+    Serial.println("TREAT DISPENSED");
+  pelletServo.write(SERVO_CLOSED);
+  delay(300);
 }
 
 
@@ -281,8 +280,8 @@ void resetQuietTimer() {
   // Reset reward schedule
   if (scheduleIndex != 0) {
     scheduleIndex = 0;
-    Serial.println("REWARD SCHEDULE RESET");
-    Serial.println("NEXT REWARD TARGET: 3 seconds");
+    Serial.println("***REWARD SCHEDULE RESET***");
+    Serial.println("***NEXT REWARD TARGET: 3 seconds***");
   }
 }
 
@@ -327,7 +326,7 @@ void checkRewardTarget(unsigned long quietDuration) {
     Serial.print("PAUSING FOR ");
     Serial.print(REWARD_PAUSE_MS / 1000);
     Serial.println(" SECONDS");
-    Serial.print("NEXT REWARD TARGET: ");
+    Serial.print("***NEXT REWARD TARGET: ***");
     Serial.print(rewardSchedule[scheduleIndex]);
     Serial.println(" seconds");
   }
@@ -342,7 +341,7 @@ void advanceRewardSchedule() {
   scheduleIndex++;
   if (scheduleIndex >= SCHEDULE_LENGTH) {
     scheduleIndex = 0;
-    Serial.println("REWARD CYCLE RESTARTED");
+    Serial.println("***REWARD CYCLE RESTARTED***");
   }
 }
 

@@ -12,6 +12,8 @@ const int TRAINING_STAGE = 1;
 // 0 = run indefinitely.
 const unsigned long SESSION_MINUTES = 5;
 
+bool eatingPeriodActive = false;
+unsigned long eatingPeriodStartTime = 0;
 
 // =====================================================
 // LOTTERY CONFIGURATION
@@ -54,14 +56,47 @@ const int SOUND_PIN = A0;
 const int BARKING_THRESHOLD = 10;
 const int WHIMPER_THRESHOLD = 5;
 
-// Sound sampling settings.
-const unsigned long SOUND_SAMPLE_MS = 40;
-const unsigned long SOUND_CHECK_INTERVAL_MS = 60;
+// Post-reward waiting times (SECONDS)
+const unsigned long TREAT_DISPENSE_WAIT_SEC = 1;
+const unsigned long TREAT_EATING_WAIT_SEC = 5;
+const unsigned long POST_REWARD_SETTLE_SEC = 2;
+
+// Automatically start the next trial?
+const bool AUTO_START_NEXT_TRIAL = true;
+
+
+// Sound measurement timing (SECONDS)
+const float SOUND_SAMPLE_WINDOW_SEC = 0.05;
+const float SOUND_CHECK_INTERVAL_SEC = 0.25;
 
 // Prevent repeated timer resets and log spam
 // while the same vocalization continues.
-const unsigned long SOUND_RESET_COOLDOWN_MS = 1000;
+const unsigned long SOUND_RESET_COOLDOWN_SEC = 1;
 
+// =====================================================
+// TIME CONVERSIONS
+// =====================================================
+
+const unsigned long SESSION_DURATION_MS =
+  SESSION_MINUTES * 60UL * 1000UL;
+
+const unsigned long TREAT_DISPENSE_WAIT_MS =
+  TREAT_DISPENSE_WAIT_SEC * 1000UL;
+
+const unsigned long TREAT_EATING_WAIT_MS =
+  TREAT_EATING_WAIT_SEC * 1000UL;
+
+const unsigned long POST_REWARD_SETTLE_MS =
+  POST_REWARD_SETTLE_SEC * 1000UL;
+
+const unsigned long SOUND_SAMPLE_WINDOW_MS =
+  (unsigned long)(SOUND_SAMPLE_WINDOW_SEC * 1000.0);
+
+const unsigned long SOUND_CHECK_INTERVAL_MS =
+  (unsigned long)(SOUND_CHECK_INTERVAL_SEC * 1000.0);
+
+const unsigned long SOUND_RESET_COOLDOWN_MS = 
+  (unsigned long) (SOUND_RESET_COOLDOWN_SEC * 1000.0);
 
 // =====================================================
 // SERVO CONFIGURATION
@@ -238,7 +273,7 @@ SoundReading measureSound() {
 
   unsigned long sampleStart = millis();
 
-  while (millis() - sampleStart < SOUND_SAMPLE_MS) {
+  while (millis() - sampleStart < SOUND_SAMPLE_WINDOW_MS) {
 
     int reading = analogRead(SOUND_PIN);
 
@@ -449,12 +484,50 @@ void successfulTrial() {
   Serial.println(F("============================"));
   Serial.println();
 
+  // Dispense the reward.
   dispensePellets(reward);
 
-  // Automatically start the next quiet trial.
-  startQuietTrial();
+  // Do not start another trial yet.
+  // Wait for dispensing to finish first.
 }
 
+
+// =====================================================
+// UPDATING EATING PAUSE
+// =====================================================
+void updateEatingPeriod() {
+
+  if (!sessionActive) return;
+
+  // Wait until all dispensing cycles are complete.
+  if (!eatingPeriodActive && !trialActive && !servoDispensing) {
+
+    // Only enter eating period after a successful trial.
+    if (successfulTrials > 0 &&
+        totalTrials == successfulTrials) {
+
+      eatingPeriodActive = true;
+      eatingPeriodStartTime = millis();
+
+      Serial.print(F("[EATING] Coco has "));
+      Serial.print(TREAT_EATING_WAIT_SEC);
+      Serial.println(F(" seconds to eat."));
+    }
+  }
+
+  // Check whether eating period has finished.
+  if (eatingPeriodActive) {
+
+    if (millis() - eatingPeriodStartTime >= TREAT_EATING_WAIT_MS) {
+
+      eatingPeriodActive = false;
+
+      Serial.println(F("[EATING COMPLETE] Starting next trial."));
+
+      startQuietTrial();
+    }
+  }
+}
 
 // =====================================================
 // RESET QUIET TIMER AFTER VOCALIZATION
@@ -504,18 +577,16 @@ void checkSound() {
 
   if (!sessionActive || !trialActive) return;
 
+  // Ignore sounds while Coco is eating.
+  if (eatingPeriodActive) return;
   unsigned long now = millis();
-
   if (now - lastSoundCheck < SOUND_CHECK_INTERVAL_MS) {
     return;
   }
 
   lastSoundCheck = now;
-
   SoundReading sound = measureSound();
-
   if (sound.soundLevel >= WHIMPER_THRESHOLD) {
-
     resetQuietTimer(sound);
   }
 }
@@ -789,11 +860,13 @@ void loop() {
 
   updateButton();
 
+  updateServo();
+
+  updateEatingPeriod();
+
   checkSound();
 
   updateQuietTimer();
 
   updateSession();
-
-  updateServo();
 }

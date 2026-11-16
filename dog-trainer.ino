@@ -25,7 +25,7 @@ const bool BARKING_RESETS_TIMER = true;
 const bool WHIMPER_RESETS_TIMER = true;
 
 // Reward timing
-const unsigned long REWARD_PAUSE_MS = 2000;
+const unsigned long REWARD_PAUSE_MS = 5000;
 
 // Reward schedule (seconds)
 const int rewardSchedule[] = {
@@ -315,7 +315,7 @@ void checkRewardTarget(unsigned long quietDuration) {
     Serial.println(",DISPENSE TREAT");
 
     // Uncomment to activate automatic treat dispensing
-    // dispenseTreat();
+    dispenseTreat();
 
     advanceRewardSchedule();
 

@@ -22,6 +22,11 @@ struct SoundReading {
 // Change these settings most often.
 // =====================================================
 
+// Delay before training begins (SECONDS).
+// Gives you time to leave after pressing the button.
+// 0 = start immediately.
+const unsigned long STARTUP_DELAY_SEC = 10;
+
 // -----------------------------------------------------
 // TRAINING SESSION
 // -----------------------------------------------------
@@ -244,6 +249,8 @@ const unsigned long SOUND_CHECK_INTERVAL_MS =
 const unsigned long SOUND_DEBUG_INTERVAL_MS =
   (unsigned long)(SOUND_DEBUG_INTERVAL_SEC * 1000.0);
 
+const unsigned long STARTUP_DELAY_MS =
+  STARTUP_DELAY_SEC * 1000UL;
 
 // =====================================================
 // FUNCTION PROTOTYPES
@@ -266,6 +273,8 @@ void failCurrentTrial(const SoundReading& sound);
 // -----------------------------------------------------
 // Session and trial state
 // -----------------------------------------------------
+bool startupDelayActive = false;
+unsigned long startupDelayStartTime = 0;
 
 bool sessionActive = false;
 bool trialActive = false;
@@ -1151,6 +1160,44 @@ void updateQuietTimer() {
 // SESSION MANAGEMENT
 // =====================================================
 
+
+// -----------------------------------------------------
+// Initialize startup delay
+// -----------------------------------------------------
+
+void updateStartupDelay() {
+
+  if (!sessionActive || !startupDelayActive) return;
+
+  unsigned long elapsed =
+    millis() - startupDelayStartTime;
+
+  if (elapsed >= STARTUP_DELAY_MS) {
+
+    startupDelayActive = false;
+
+    // Actual training session begins now.
+    sessionStartTime = millis();
+
+    Serial.println();
+    Serial.println(F("[STARTUP] Complete | Beginning training"));
+
+    startQuietTrial();
+  }
+
+  else {
+
+    unsigned long remaining =
+      STARTUP_DELAY_MS - elapsed;
+
+    printCountdown(
+      "START",
+      remaining,
+      STARTUP_DELAY_MS
+    );
+  }
+}
+
 // -----------------------------------------------------
 // Start session
 // -----------------------------------------------------
@@ -1161,6 +1208,10 @@ void startSession() {
 
   sessionActive = true;
 
+  startupDelayActive = STARTUP_DELAY_MS > 0;
+  startupDelayStartTime = millis();
+
+  // Temporary start time; reset when startup finishes.
   sessionStartTime = millis();
 
   waitingForQuietAfterFailure = false;
@@ -1188,12 +1239,9 @@ void startSession() {
   Serial.print(F(" | Session "));
 
   if (SESSION_MINUTES == 0) {
-
     Serial.println(F("Unlimited"));
   }
-
   else {
-
     Serial.print(SESSION_MINUTES);
     Serial.println(F(" min"));
   }
@@ -1202,9 +1250,27 @@ void startSession() {
     F("[STARTED] Short press=start | Hold=stop")
   );
 
-  startQuietTrial();
-}
+  if (startupDelayActive) {
 
+    Serial.print(F("[STARTUP] "));
+    Serial.print(STARTUP_DELAY_SEC);
+    Serial.println(F("s delay | Leave now!"));
+
+    resetCountdownDisplay();
+
+    printCountdown(
+      "START",
+      STARTUP_DELAY_MS,
+      STARTUP_DELAY_MS
+    );
+  }
+
+  else {
+
+    sessionStartTime = millis();
+    startQuietTrial();
+  }
+}
 
 // -----------------------------------------------------
 // Stop session
@@ -1214,12 +1280,15 @@ void stopSession() {
 
   if (!sessionActive) return;
 
+  unsigned long elapsedSessionMs =
+  startupDelayActive ? 0 : millis() - sessionStartTime;
+  startupDelayActive = false;
   sessionActive = false;
 
   trialActive = false;
 
   waitingForQuietAfterFailure = false;
-
+  
   eatingPeriodActive = false;
   eatingPeriodPending = false;
 
@@ -1264,7 +1333,7 @@ void stopSession() {
   Serial.println('%');
 
   Serial.print(F("Duration: "));
-  Serial.print((millis() - sessionStartTime) / 60000.0, 1);
+  Serial.print(elapsedSessionMs / 60000.0, 1);
   Serial.println(F(" min"));
 
   Serial.println(F("==============================="));
@@ -1277,8 +1346,8 @@ void stopSession() {
 
 void updateSession() {
 
-  if (!sessionActive) return;
-
+  if (!sessionActive || startupDelayActive) return;
+  
   // Zero means unlimited session.
   if (SESSION_MINUTES == 0) return;
 
@@ -1432,6 +1501,8 @@ void loop() {
   updateButton();
 
   updateServo();
+
+  updateStartupDelay();
 
   updateEatingPeriod();
 

@@ -317,6 +317,8 @@ bool servoIsOpen = false;
 bool servoWaitingForNextCycle = false;
 
 int portionsRemaining = 0;
+int portionsCompleted = 0;
+int portionsTotal = 0;
 
 unsigned long servoStateStart = 0;
 
@@ -641,6 +643,23 @@ int getLotteryReward() {
   return NORMAL_REWARD;
 }
 
+const char* getRewardName(int reward) {
+
+  if (reward == JACKPOT_REWARD) {
+    return "JACKPOT";
+  }
+
+  if (reward == BIG_BONUS_REWARD) {
+    return "BIG BONUS";
+  }
+
+  if (reward == SMALL_BONUS_REWARD) {
+    return "SMALL BONUS";
+  }
+
+  return "NORMAL";
+}
+
 // =====================================================
 // SERVO DISPENSER
 // =====================================================
@@ -649,7 +668,15 @@ void dispensePellets(int portions) {
 
   if (portions <= 0) return;
 
+  // Start a new dispensing batch.
+  if (!servoDispensing) {
+
+    portionsCompleted = 0;
+    portionsTotal = 0;
+  }
+
   portionsRemaining += portions;
+  portionsTotal += portions;
 
   if (servoDispensing) return;
 
@@ -660,7 +687,6 @@ void dispensePellets(int portions) {
 
   servoStateStart = millis();
 }
-
 
 
 void updateServo() {
@@ -684,14 +710,11 @@ void updateServo() {
 
       servoWaitingForNextCycle = false;
 
-      Serial.println(F("[SERVO] Wait complete | Starting next cycle"));
-
       pelletServo.write(SERVO_OPEN);
 
       servoIsOpen = true;
       servoStateStart = now;
     }
-
     else {
 
       unsigned long remaining =
@@ -731,10 +754,13 @@ void updateServo() {
     if (now - servoStateStart >= SERVO_CLOSED_MS) {
 
       portionsRemaining--;
+      portionsCompleted++;
 
-      Serial.print(F("[DISPENSE] "));
-      Serial.print(portionsRemaining);
-      Serial.println(F(" cycles left"));
+      Serial.print(F("[DISPENSE] Completed "));
+      Serial.print(portionsCompleted);
+      Serial.print('/');
+      Serial.print(portionsTotal);
+      Serial.println(F(" cycles"));
 
       if (portionsRemaining > 0) {
 
@@ -745,9 +771,7 @@ void updateServo() {
       }
 
       else {
-
         servoDispensing = false;
-        Serial.println(F("[DISPENSE] Complete"));
       }
     }
   }
@@ -835,7 +859,6 @@ void updateAdaptiveProgression(bool passed) {
     }
 
     else {
-
       Serial.println(F("[REGRESS] Already at Stage 1"));
     }
   }
@@ -914,17 +937,9 @@ void successfulTrial() {
 
   Serial.print(F(" | reward="));
   Serial.print(reward);
-  Serial.println('x');
-
-  if (reward == JACKPOT_REWARD &&
-      currentTrainingStage >= LOTTERY_START_STAGE) {
-
-    Serial.println(F("*** JACKPOT! ***"));
-  }
-  else if (reward > NORMAL_REWARD) {
-
-    Serial.println(F("*** BONUS! ***"));
-  }
+  Serial.print(F("x ("));
+  Serial.print(getRewardName(reward));
+  Serial.println(')');
 
   // Update training difficulty for the next trial.
   updateAdaptiveProgression(true);

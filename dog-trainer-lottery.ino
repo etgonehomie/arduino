@@ -62,6 +62,33 @@ static_assert(
 );
 
 // -----------------------------------------------------
+// ADAPTIVE TRAINING CONFIGURATION
+// -----------------------------------------------------
+
+// Number of consecutive passes at the highest stage
+// required to advance to the next stage.
+constexpr int PASSES_TO_ADVANCE = 5;
+
+// Probability of selecting each trial difficulty.
+constexpr int CURRENT_STAGE_CHANCE = 85;   // 85%
+constexpr int PREVIOUS_STAGE_CHANCE = 10;  // 10%
+constexpr int OLDER_STAGE_CHANCE = 5;      // 5%
+
+// Ensure trial probabilities total exactly 100%.
+static_assert(
+  CURRENT_STAGE_CHANCE +
+  PREVIOUS_STAGE_CHANCE +
+  OLDER_STAGE_CHANCE == 100,
+  "ERROR: Trial stage probabilities must total 100%!"
+);
+
+static_assert(
+  PASSES_TO_ADVANCE >= 1,
+  "ERROR: PASSES_TO_ADVANCE must be at least 1!"
+);
+
+
+// -----------------------------------------------------
 // SOUND CONFIGURATION
 // -----------------------------------------------------
 
@@ -225,8 +252,6 @@ const unsigned long SOUND_DEBUG_INTERVAL_MS =
 // Keep these declarations after the custom structures.
 // This avoids Arduino IDE prototype-generation issues.
 
-RewardStage getCurrentStage();
-
 SoundReading measureSound();
 
 void printSoundInfo(const SoundReading& sound);
@@ -256,6 +281,18 @@ int totalTrials = 0;
 int successfulTrials = 0;
 int failedTrials = 0;
 
+// -----------------------------------------------------
+// ADAPTIVE TRAINING STATE
+// -----------------------------------------------------
+
+// Highest currently achieved training stage.
+int currentTrainingStage = TRAINING_STAGE;
+
+// Actual stage selected for the current trial.
+int currentTrialStage = TRAINING_STAGE;
+
+// Consecutive successful trials at the highest stage.
+int consecutivePasses = 0;
 
 // -----------------------------------------------------
 // Post-failure and eating state
@@ -445,18 +482,63 @@ void printCountdown(
 
 
 // =====================================================
-// TRAINING STAGE / QUIET DURATION
+// GENERATE NEXT QUIET DURATION
 // =====================================================
-
-RewardStage getCurrentStage() {
-
-  return stages[TRAINING_STAGE - 1];
-}
-
 
 void generateNextQuietDuration() {
 
-  RewardStage stage = getCurrentStage();
+  // Stage 1 has no easier stages.
+  if (currentTrainingStage == 1) {
+
+    currentTrialStage = 1;
+  }
+
+  else {
+
+    int roll = random(100);
+
+    // -----------------------------------------
+    // CURRENT STAGE
+    // -----------------------------------------
+
+    if (roll < CURRENT_STAGE_CHANCE) {
+
+      currentTrialStage = currentTrainingStage;
+    }
+
+    // -----------------------------------------
+    // PREVIOUS STAGE
+    // -----------------------------------------
+
+    else if (
+      currentTrainingStage == 2 ||
+      roll < CURRENT_STAGE_CHANCE + PREVIOUS_STAGE_CHANCE
+    ) {
+
+      // At Stage 2, both easier categories
+      // effectively select Stage 1.
+      currentTrialStage = currentTrainingStage - 1;
+    }
+
+    // -----------------------------------------
+    // ANY OLDER STAGE
+    // -----------------------------------------
+
+    else {
+
+      // Randomly select any stage except:
+      // - Current stage
+      // - Immediately previous stage
+
+      currentTrialStage = random(
+        1,
+        currentTrainingStage - 1
+      );
+    }
+  }
+
+  // Generate duration using the selected trial stage.
+  RewardStage stage = stages[currentTrialStage - 1];
 
   quietDurationMs = random(
     stage.minIntervalMs,
@@ -535,7 +617,7 @@ void printSoundInfo(const SoundReading& sound) {
 int getLotteryReward() {
 
   // Early stages always receive the normal reward.
-  if (TRAINING_STAGE < LOTTERY_START_STAGE) {
+  if (currentTrainingStage < LOTTERY_START_STAGE) {
     return NORMAL_REWARD;
   }
 
@@ -672,6 +754,94 @@ void updateServo() {
 }
 
 // =====================================================
+// ADAPTIVE TRAINING PROGRESSION
+// =====================================================
+
+void updateAdaptiveProgression(bool passed) {
+
+  // ==========================================
+  // SUCCESSFUL TRIAL
+  // ==========================================
+
+  if (passed) {
+
+    // Only count successes at the highest stage.
+    if (currentTrialStage == currentTrainingStage) {
+
+      consecutivePasses++;
+
+      Serial.print(F("[PROGRESS] Highest-stage passes: "));
+      Serial.print(consecutivePasses);
+      Serial.print('/');
+      Serial.println(PASSES_TO_ADVANCE);
+
+      // Advance after enough consecutive successes.
+      if (consecutivePasses >= PASSES_TO_ADVANCE) {
+
+        consecutivePasses = 0;
+
+        if (currentTrainingStage < TOTAL_STAGES) {
+
+          int previousStage = currentTrainingStage;
+
+          currentTrainingStage++;
+
+          Serial.print(F("[ADVANCE] Stage "));
+          Serial.print(previousStage);
+          Serial.print(F(" -> Stage "));
+          Serial.println(currentTrainingStage);
+        }
+
+        else {
+
+          Serial.println(F("[ADVANCE] Maximum stage reached"));
+        }
+      }
+    }
+
+    else {
+
+      // Easier-stage successes do not count toward
+      // advancement and do not reset the streak.
+
+      Serial.print(F("[PROGRESS] Easier-stage pass | "));
+      Serial.print(consecutivePasses);
+      Serial.print('/');
+      Serial.println(PASSES_TO_ADVANCE);
+    }
+  }
+
+  // ==========================================
+  // FAILED TRIAL
+  // ==========================================
+
+  else {
+
+    // Any failure, regardless of trial difficulty,
+    // resets the streak and lowers the training level.
+
+    consecutivePasses = 0;
+
+    if (currentTrainingStage > 1) {
+
+      int previousStage = currentTrainingStage;
+
+      currentTrainingStage--;
+
+      Serial.print(F("[REGRESS] Stage "));
+      Serial.print(previousStage);
+      Serial.print(F(" -> Stage "));
+      Serial.println(currentTrainingStage);
+    }
+
+    else {
+
+      Serial.println(F("[REGRESS] Already at Stage 1"));
+    }
+  }
+}
+
+// =====================================================
 // TRIAL MANAGEMENT
 // =====================================================
 
@@ -699,7 +869,13 @@ void startQuietTrial() {
 
   Serial.print(F("[TRIAL "));
   Serial.print(totalTrials);
-  Serial.print(F(" START] target="));
+  Serial.print(F(" START] stage="));
+  Serial.print(currentTrialStage);
+
+  Serial.print(F(" | goal="));
+  Serial.print(currentTrainingStage);
+
+  Serial.print(F(" | target="));
 
   Serial.print(quietDurationMs / 1000.0, 1);
   Serial.println('s');
@@ -718,7 +894,6 @@ void successfulTrial() {
 
   successfulTrials++;
 
-  // Start eating period after dispensing finishes.
   eatingPeriodPending = true;
 
   int reward = getLotteryReward();
@@ -726,6 +901,12 @@ void successfulTrial() {
   Serial.println();
   Serial.print(F("[PASS] #"));
   Serial.print(totalTrials);
+
+  Serial.print(F(" | trial_stage="));
+  Serial.print(currentTrialStage);
+
+  Serial.print(F(" | training_stage="));
+  Serial.print(currentTrainingStage);
 
   Serial.print(F(" | "));
   Serial.print(quietDurationMs / 1000.0, 1);
@@ -736,7 +917,7 @@ void successfulTrial() {
   Serial.println('x');
 
   if (reward == JACKPOT_REWARD &&
-      TRAINING_STAGE >= LOTTERY_START_STAGE) {
+      currentTrainingStage >= LOTTERY_START_STAGE) {
 
     Serial.println(F("*** JACKPOT! ***"));
   }
@@ -744,6 +925,9 @@ void successfulTrial() {
 
     Serial.println(F("*** BONUS! ***"));
   }
+
+  // Update training difficulty for the next trial.
+  updateAdaptiveProgression(true);
 
   dispensePellets(reward);
 }
@@ -774,6 +958,12 @@ void failCurrentTrial(const SoundReading& sound) {
   Serial.print(F("[FAIL] #"));
   Serial.print(totalTrials);
 
+  Serial.print(F(" | trial_stage="));
+  Serial.print(currentTrialStage);
+
+  Serial.print(F(" | training_stage="));
+  Serial.print(currentTrainingStage);
+
   Serial.print(F(" | quiet="));
   Serial.print(previousQuietTime / 1000.0, 1);
   Serial.print('s');
@@ -781,6 +971,9 @@ void failCurrentTrial(const SoundReading& sound) {
   printSoundInfo(sound);
 
   Serial.println();
+
+  // Failure immediately lowers the difficulty.
+  updateAdaptiveProgression(false);
 
   Serial.println(F("[WAIT] Waiting for quiet"));
 }
@@ -902,7 +1095,7 @@ void checkSound() {
         Serial.print(sound.soundLevel);
 
         Serial.print(' ');
-        Serial.print(getSoundType(sound.soundLevel));
+        Serial.println(getSoundType(sound.soundLevel));
       }
     }
   }
@@ -962,6 +1155,10 @@ void startSession() {
 
   lastStatusPrintTime = 0;
   lastSoundCheck = 0;
+
+  currentTrainingStage = TRAINING_STAGE;
+  currentTrialStage = TRAINING_STAGE;
+  consecutivePasses = 0;
 
   totalTrials = 0;
   successfulTrials = 0;
